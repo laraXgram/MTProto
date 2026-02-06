@@ -1,0 +1,40 @@
+{
+    "name": "laraxgram/mtproto",
+    "description": "LaraGram MTProto Wrapper.",
+    "keywords": ["laragram", "mtproto", "bot", "telegram"],
+    "license": "MIT",
+    "support": {
+        "issues": "https://github.com/laraxgram/mtproto/issues",
+        "source": "https://github.com/laraxgram/mtproto"
+    },
+    "authors": [
+        {
+            "name": "laraXgram",
+            "email": "laraxgram@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "ext-gmp": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-openssl": "*",
+        "ext-sockets": "*",
+        "ext-zlib": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "LaraGram\\MTProto\\": "src/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-master": "0.x-dev"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
