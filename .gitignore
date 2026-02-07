@@ -2,6 +2,7 @@
 /.idea
 /.fleet
 /.vscode
+/src/Generated
 .DS_Store
 Thumbs.db
 composer.phar

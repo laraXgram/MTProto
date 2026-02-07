@@ -15,6 +15,7 @@ use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\RPC\RPCHandler;
 use LaraGram\MTProto\Session\FileSession;
 use LaraGram\MTProto\TL\TLParser;
+use LaraGram\MTProto\Generated\ClientMethods;
 use LaraGram\MTProto\Transport\AbridgedTransport;
 
 /**
@@ -30,6 +31,8 @@ use LaraGram\MTProto\Transport\AbridgedTransport;
  */
 class Client
 {
+    use ClientMethods;
+
     public const VERSION = '1.0.0-dev';
     public const LAYER   = 214;
 
@@ -38,8 +41,11 @@ class Client
     private TransportInterface  $transport;
     private CryptoInterface     $crypto;
     private SessionInterface    $session;
-    private ?RPCHandler         $rpc       = null;
-    private ?TLParser           $tlParser  = null;
+    private ?RPCHandler         $rpc              = null;
+    private ?TLParser           $tlParser         = null;
+    private ?PeerDatabase       $peerDb           = null;
+    private ?PeerResolver       $peerResolver     = null;
+    private ?ParamPreprocessor  $paramPreprocessor = null;
 
     // ── config ─────────────────────────────────────────────────────────
     private int    $apiId;
@@ -120,6 +126,9 @@ class Client
             $this->dcId = $storedDc;
         }
 
+        // Initialise peer database (lives alongside the session file)
+        $this->peerDb = new PeerDatabase($this->sessionDir, $sessionName);
+
         // TCP connect to the right DC
         $this->connectTcp();
 
@@ -147,9 +156,13 @@ class Client
         }
 
         try { $this->session->save(); } catch (\Throwable) {}
+        try { $this->peerDb?->save(); } catch (\Throwable) {}
         try { $this->connection->disconnect(); } catch (\Throwable) {}
 
-        $this->rpc       = null;
+        $this->rpc              = null;
+        $this->peerResolver     = null;
+        $this->paramPreprocessor = null;
+        $this->resetNamespaces();
         $this->connected = false;
     }
 
@@ -165,7 +178,10 @@ class Client
         // Close current connection
         try { $this->connection->disconnect(); } catch (\Throwable) {}
 
-        $this->rpc  = null;
+        $this->rpc              = null;
+        $this->peerResolver     = null;
+        $this->paramPreprocessor = null;
+        $this->resetNamespaces();
         $this->dcId = $newDcId;
 
         // Build a new session name: user_dc2 → user_dc4
@@ -198,59 +214,90 @@ class Client
      * Call any Telegram API method.
      *
      * Handles automatically:
+     *  - Parameter preprocessing (auto InputPeer, random_id, reply_to, …)
      *  - Connection initialisation (Ping + InvokeWithLayer + InitConnection)
      *  - DC migration  (PHONE_MIGRATE_X / USER_MIGRATE_X / FILE_MIGRATE_X)
      *  - Bad server salt  (auto-retry with new salt)
+     *  - Peer caching from every response
      *
      * @param  string $method  e.g. "account.updateProfile"
-     * @param  array  $params  Method parameters
-     * @return array  Deserialized TL result
+     * @param  array  $params  Method parameters (simplified values accepted)
+     * @return mixed  Deserialized TL result (array, bool, int, etc.)
      * @throws MTProtoException
      */
-    public function invoke(string $method, array $params = []): array
+    public function invoke(string $method, array $params = []): mixed
+    {
+        $this->ensureConnected();
+
+        // ── Preprocess parameters ──────────────────────────────────────
+        $params = $this->getPreprocessor()->process($method, $params);
+
+        // ── Send RPC ───────────────────────────────────────────────────
+        $result = $this->invokeRaw($method, $params);
+
+        // ── Cache peers from response ──────────────────────────────────
+        if ($this->peerDb !== null && is_array($result)) {
+            $this->peerDb->cachePeersFromResponse($result);
+            $this->peerDb->save();
+        }
+
+        return $result;
+    }
+
+    /**
+     * Low-level invoke — no parameter preprocessing, no peer caching.
+     *
+     * Used internally by PeerResolver to avoid infinite recursion when
+     * it needs to call contacts.resolveUsername / users.getUsers etc.
+     *
+     * @internal
+     */
+    public function invokeRaw(string $method, array $params = []): mixed
     {
         $this->ensureConnected();
 
         try {
-            return $this->getRpc()->invoke($method, $params);
+            $result = $this->getRpc()->invoke($method, $params);
         } catch (MTProtoException $e) {
             // Auto DC-migration
             if (preg_match('/(PHONE|USER|FILE|NETWORK)_MIGRATE_(\d+)/', $e->getMessage(), $m)) {
                 $targetDc = (int) $m[2];
                 $this->switchDc($targetDc);
-                return $this->getRpc()->invoke($method, $params);
+                $result = $this->getRpc()->invoke($method, $params);
+            } else {
+                throw $e;
             }
-            throw $e;
         }
-    }
 
-    // ================================================================
-    //  Fluent namespace access  ($client->account->updateProfile)
-    // ================================================================
+        // Auto-convert Bool results to native PHP bool
+        if (is_array($result) && isset($result['_'])) {
+            if ($result['_'] === 'boolTrue')  return true;
+            if ($result['_'] === 'boolFalse') return false;
+        }
 
-    /**
-     * Magic getter – returns a MethodNamespace proxy.
-     *
-     *   $client->account  →  MethodNamespace('account')
-     */
-    public function __get(string $name): MethodNamespace
-    {
-        return new MethodNamespace($this, $name);
+        // Cache peers from raw invocations too (e.g. PeerResolver calls)
+        if ($this->peerDb !== null && is_array($result)) {
+            $this->peerDb->cachePeersFromResponse($result);
+        }
+
+        return $result;
     }
 
     // ================================================================
     //  Getters
     // ================================================================
 
-    public function getApiId():      int                 { return $this->apiId;    }
-    public function getApiHash():    string              { return $this->apiHash;  }
-    public function getDcId():       int                 { return $this->dcId;     }
-    public function getSession():    SessionInterface    { return $this->session;  }
-    public function getCrypto():     CryptoInterface     { return $this->crypto;   }
-    public function isReady():       bool                { return $this->connected && $this->connection->isConnected(); }
-    public function getConnection(): ConnectionInterface { return $this->connection; }
-    public function getTransport():  TransportInterface  { return $this->transport;  }
-    public function getTlParser():   ?TLParser           { return $this->tlParser;   }
+    public function getApiId():        int                 { return $this->apiId;    }
+    public function getApiHash():      string              { return $this->apiHash;  }
+    public function getDcId():         int                 { return $this->dcId;     }
+    public function getSession():      SessionInterface    { return $this->session;  }
+    public function getCrypto():       CryptoInterface     { return $this->crypto;   }
+    public function isReady():         bool                { return $this->connected && $this->connection->isConnected(); }
+    public function getConnection():   ConnectionInterface { return $this->connection; }
+    public function getTransport():    TransportInterface  { return $this->transport;  }
+    public function getTlParser():     ?TLParser           { return $this->tlParser;   }
+    public function getPeerDatabase(): ?PeerDatabase       { return $this->peerDb;     }
+    public function getResolver():     ?PeerResolver       { return $this->peerResolver; }
 
     // ================================================================
     //  Internals
@@ -261,6 +308,24 @@ class Client
         if (!$this->connected) {
             throw new MTProtoException('Not connected — call connect() first');
         }
+    }
+
+    /**
+     * Lazily build the ParamPreprocessor (and its PeerResolver dependency).
+     */
+    private function getPreprocessor(): ParamPreprocessor
+    {
+        if ($this->paramPreprocessor !== null) {
+            return $this->paramPreprocessor;
+        }
+
+        // Ensure TL parser + RPC are ready
+        $this->getRpc();
+
+        $this->peerResolver = new PeerResolver($this->peerDb, $this);
+        $this->paramPreprocessor = new ParamPreprocessor($this->peerResolver, $this->tlParser);
+
+        return $this->paramPreprocessor;
     }
 
     /**
