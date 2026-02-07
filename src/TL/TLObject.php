@@ -16,7 +16,37 @@ namespace LaraGram\MTProto\TL;
  *  - json_encode():      json_encode($obj)
  *  - isset():            isset($obj->first_name)  /  isset($obj['first_name'])
  *  - foreach:            foreach ($obj as $key => $value)
+ *
+ * @property-read mixed $message
+ * @property-read mixed $id
+ * @property-read mixed $user_id
+ * @property-read mixed $chat_id
+ * @property-read mixed $channel_id
+ * @property-read mixed $from_id
+ * @property-read mixed $peer_id
+ * @property-read mixed $date
+ * @property-read mixed $text
+ * @property-read mixed $out
+ * @property-read mixed $mentioned
+ * @property-read mixed $media
+ * @property-read mixed $reply_to
+ * @property-read mixed $entities
+ * @property-read mixed $pts
+ * @property-read mixed $pts_count
+ * @property-read mixed $qts
+ * @property-read mixed $seq
+ * @property-read mixed $update
+ * @property-read mixed $updates
+ * @property-read mixed $users
+ * @property-read mixed $chats
+ * @property-read mixed $fwd_from
+ * @property-read mixed $via_bot_id
+ * @property-read mixed $reply_markup
+ * @property-read mixed $silent
+ * @property-read mixed $media_unread
+ * @property-read mixed $ttl_period
  */
+#[\AllowDynamicProperties]
 class TLObject implements \ArrayAccess, \JsonSerializable, \IteratorAggregate, \Countable
 {
     /** @var array<string, mixed> Raw TL data */

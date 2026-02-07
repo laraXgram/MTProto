@@ -7,9 +7,12 @@ namespace LaraGram\MTProto\Core;
 use LaraGram\MTProto\Auth\AuthKeyGenerator;
 use LaraGram\MTProto\Contracts\ConnectionInterface;
 use LaraGram\MTProto\Contracts\CryptoInterface;
+use LaraGram\MTProto\Contracts\EventLoopInterface;
 use LaraGram\MTProto\Contracts\SessionInterface;
 use LaraGram\MTProto\Contracts\TransportInterface;
 use LaraGram\MTProto\Crypto\NativeCrypto;
+use LaraGram\MTProto\Driver\Fiber\FiberEventLoop;
+use LaraGram\MTProto\Driver\Fiber\NonBlockingConnection;
 use LaraGram\MTProto\Driver\Sync\SyncConnection;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\RPC\RPCHandler;
@@ -39,15 +42,16 @@ class Client
     public const LAYER   = 214;
 
     // ── components ─────────────────────────────────────────────────────
-    private ConnectionInterface $connection;
-    private TransportInterface  $transport;
-    private CryptoInterface     $crypto;
-    private SessionInterface    $session;
-    private ?RPCHandler         $rpc              = null;
-    private ?TLParser           $tlParser         = null;
-    private ?PeerDatabase       $peerDb           = null;
-    private ?PeerResolver       $peerResolver     = null;
-    private ?ParamPreprocessor  $paramPreprocessor = null;
+    private ConnectionInterface  $connection;
+    private TransportInterface   $transport;
+    private CryptoInterface      $crypto;
+    private SessionInterface     $session;
+    private ?EventLoopInterface  $eventLoop         = null;
+    private ?RPCHandler          $rpc               = null;
+    private ?TLParser            $tlParser          = null;
+    private ?PeerDatabase        $peerDb            = null;
+    private ?PeerResolver        $peerResolver      = null;
+    private ?ParamPreprocessor   $paramPreprocessor = null;
 
     // ── config ─────────────────────────────────────────────────────────
     private int    $apiId;
@@ -62,6 +66,11 @@ class Client
     private bool   $connected   = false;
     private string $sessionName = '';
 
+    /**
+     * Whether to use NonBlockingConnection (auto-detected from event loop).
+     */
+    private bool $useFiberConnection = false;
+
     // ================================================================
     //  Construction
     // ================================================================
@@ -75,9 +84,10 @@ class Client
      *     @type bool   $ipv6        Use IPv6
      *     @type float  $timeout     Connection timeout
      *     @type string $session_dir Directory for session files
-     *     @type ConnectionInterface $connection  Custom connection driver
-     *     @type TransportInterface  $transport   Custom transport
-     *     @type CryptoInterface     $crypto      Custom crypto
+     *     @type ConnectionInterface  $connection  Custom connection driver
+     *     @type TransportInterface   $transport   Custom transport
+     *     @type CryptoInterface      $crypto      Custom crypto
+     *     @type EventLoopInterface   $event_loop  Event loop (auto-selects connection type)
      * }
      */
     public function __construct(int $apiId, string $apiHash, array $options = [])
@@ -90,7 +100,21 @@ class Client
         $this->timeout    = $options['timeout']      ?? 10.0;
         $this->sessionDir = $options['session_dir']  ?? './sessions';
 
-        $this->connection = $options['connection'] ?? new SyncConnection();
+        // Store event loop reference for Fiber-aware connection management
+        $this->eventLoop = $options['event_loop'] ?? null;
+
+        // Auto-detect: if using FiberEventLoop and no custom connection,
+        // use NonBlockingConnection for non-blocking I/O
+        if (
+            $this->eventLoop instanceof FiberEventLoop
+            && !isset($options['connection'])
+        ) {
+            $this->useFiberConnection = true;
+            $this->connection = new NonBlockingConnection();
+        } else {
+            $this->connection = $options['connection'] ?? new SyncConnection();
+        }
+
         $this->transport  = $options['transport']  ?? new AbridgedTransport();
         $this->crypto     = $options['crypto']     ?? new NativeCrypto();
     }
@@ -169,6 +193,49 @@ class Client
     }
 
     /**
+     * Create a new TCP connection reusing the existing auth key.
+     *
+     * This is used by the Fork driver: after pcntl_fork(), the child
+     * process calls reconnect() to get its own dedicated socket while
+     * keeping the same session/auth key. Without this, parent and child
+     * would share the same TCP socket, causing data corruption.
+     *
+     * IMPORTANT: We do NOT call disconnect() on the inherited connection!
+     * After fork(), the parent and child share the same underlying OS file
+     * descriptor. Calling disconnect() (which calls socket_close()) in the
+     * child would close the fd for the parent too, killing its connection.
+     * Instead, we simply abandon the old object and create a new one.
+     * The child's copy of the old fd will be cleaned up when the child exits.
+     *
+     * Can also be called by handlers that need an independent connection.
+     */
+    public function reconnect(): void
+    {
+        // Do NOT close the inherited socket — just abandon it.
+        // After fork(), closing it here would also close it in the parent
+        // because they share the same underlying OS file descriptor.
+
+        // Create a brand-new connection (the old one is simply discarded).
+        // Use the same connection type as was originally configured.
+        if ($this->useFiberConnection) {
+            $this->connection = new NonBlockingConnection();
+        } else {
+            $this->connection = new SyncConnection();
+        }
+        $this->connectTcp();
+
+        // Regenerate session ID so seqno starts fresh
+        $this->session->regenerateSessionId();
+
+        // Reset RPC handler — it will be lazily re-created with
+        // the new connection on the next API call
+        $this->rpc              = null;
+        $this->peerResolver     = null;
+        $this->paramPreprocessor = null;
+        $this->resetNamespaces();
+    }
+
+    /**
      * Switch to another DC (called automatically on PHONE_MIGRATE etc.).
      */
     public function switchDc(int $newDcId): void
@@ -195,7 +262,11 @@ class Client
         $this->session = new FileSession($newName, $this->sessionDir);
 
         // New TCP socket
-        $this->connection = new SyncConnection();
+        if ($this->useFiberConnection) {
+            $this->connection = new NonBlockingConnection();
+        } else {
+            $this->connection = new SyncConnection();
+        }
         $this->connectTcp();
 
         if ($this->session->getAuthKey() === null) {
@@ -300,6 +371,22 @@ class Client
     public function getTlParser():     ?TLParser           { return $this->tlParser;   }
     public function getPeerDatabase(): ?PeerDatabase       { return $this->peerDb;     }
     public function getResolver():     ?PeerResolver       { return $this->peerResolver; }
+    public function getSessionDir():   string              { return $this->sessionDir;   }
+    public function getSessionName():  string              { return $this->sessionName;  }
+    public function getRpcHandler():   ?RPCHandler         { return $this->rpc;          }
+    public function getEventLoop():    ?EventLoopInterface { return $this->eventLoop;    }
+
+    /**
+     * Attach an event loop to this client (for Fiber-aware connection management).
+     *
+     * If a FiberEventLoop is attached and the current connection is a SyncConnection,
+     * this will NOT replace it — the connection is only auto-selected during construction.
+     * To switch to NonBlockingConnection, recreate the Client with event_loop option.
+     */
+    public function setEventLoop(EventLoopInterface $eventLoop): void
+    {
+        $this->eventLoop = $eventLoop;
+    }
 
     // ================================================================
     //  Internals
@@ -332,6 +419,10 @@ class Client
 
     /**
      * Lazily build + initialise the RPCHandler.
+     *
+     * During initializeConnection() the client sends Ping + InvokeWithLayer
+     * which requires blocking I/O (no event loop running yet). We temporarily
+     * switch NonBlockingConnection to blocking mode for this.
      */
     private function getRpc(): RPCHandler
     {
@@ -361,8 +452,21 @@ class Client
             $this->apiHash,
         );
 
-        // Ping + InvokeWithLayer(InitConnection(help.getConfig))
-        $this->rpc->initializeConnection();
+        // initializeConnection() does blocking RPC calls (Ping + InitConnection)
+        // Switch to blocking mode temporarily if using NonBlockingConnection
+        $wasNonBlocking = false;
+        if ($this->connection instanceof NonBlockingConnection) {
+            $wasNonBlocking = true;
+            $this->connection->setNonBlocking(false);
+        }
+
+        try {
+            $this->rpc->initializeConnection();
+        } finally {
+            if ($wasNonBlocking && $this->connection instanceof NonBlockingConnection) {
+                $this->connection->setNonBlocking(true);
+            }
+        }
 
         return $this->rpc;
     }
@@ -382,20 +486,39 @@ class Client
 
     /**
      * Generate an authorization key for the current DC.
+     *
+     * Auth key generation is a multi-step synchronous handshake that
+     * MUST run blocking (not inside Fibers). When using NonBlockingConnection,
+     * we temporarily switch to blocking mode for this operation.
      */
     private function generateAuthKey(): void
     {
-        $gen = new AuthKeyGenerator(
-            $this->connection,
-            $this->transport,
-            $this->crypto,
-            $this->dcId,
-            $this->testMode,
-        );
-        $result = $gen->generate();
-        $this->session->setAuthKey($result['auth_key']);
-        $this->session->setServerSalt($result['server_salt']);
-        $this->session->setDcId($this->dcId);
+        // Auth key gen requires blocking I/O — multi-step DH handshake
+        // can't be Fiber-ized because no event loop is running yet.
+        $wasNonBlocking = false;
+        if ($this->connection instanceof NonBlockingConnection) {
+            $wasNonBlocking = true;
+            $this->connection->setNonBlocking(false);
+        }
+
+        try {
+            $gen = new AuthKeyGenerator(
+                $this->connection,
+                $this->transport,
+                $this->crypto,
+                $this->dcId,
+                $this->testMode,
+            );
+            $result = $gen->generate();
+            $this->session->setAuthKey($result['auth_key']);
+            $this->session->setServerSalt($result['server_salt']);
+            $this->session->setDcId($this->dcId);
+        } finally {
+            // Restore non-blocking mode
+            if ($wasNonBlocking && $this->connection instanceof NonBlockingConnection) {
+                $this->connection->setNonBlocking(true);
+            }
+        }
     }
 
     public function __destruct()

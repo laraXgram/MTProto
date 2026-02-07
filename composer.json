@@ -20,7 +20,10 @@
         "ext-mbstring": "*",
         "ext-openssl": "*",
         "ext-sockets": "*",
-        "ext-zlib": "*"
+        "ext-zlib": "*",
+        "openswoole/core": "22.1.5",
+        "revolt/event-loop": "^1.0",
+        "swoole/ide-helper": "^6.0"
     },
     "autoload": {
         "psr-4": {

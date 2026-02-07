@@ -267,6 +267,14 @@ class SyncConnection implements ConnectionInterface, DriverInterface
     }
 
     /**
+     * Get the underlying socket resource (for socket_select in the event loop).
+     */
+    public function getSocket(): ?\Socket
+    {
+        return $this->socket;
+    }
+
+    /**
      * {@inheritdoc}
      */
     public function getRemoteAddress(): ?string

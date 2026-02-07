@@ -693,13 +693,8 @@ $buf .= " *\n";
 $buf .= " * Provides flat method access on Client:\n";
 $buf .= " *   \$client->sendMessage(peer: '@user', message: 'hi')\n";
 $buf .= " *\n";
-$buf .= " * Also provides typed namespace properties:\n";
-
-foreach ($methodsByNs as $ns => $nsMethods) {
-    $className = namespaceToPascal($ns);
-    $buf .= " * @property-read \\{$NAMESPACE_BASE}\\Methods\\{$className} \${$ns}\n";
-}
-
+$buf .= " * Namespace properties (\$client->messages, \$client->users, etc.)\n";
+$buf .= " * are documented in ClientIdeHelper via @mixin on Client.\n";
 $buf .= " */\n\n";
 $buf .= "declare(strict_types=1);\n\n";
 $buf .= "namespace {$NAMESPACE_BASE};\n\n";

@@ -56,6 +56,15 @@ final class RPCHandler
     /** @var string API Hash */
     private string $apiHash;
 
+    /**
+     * Callback to forward updates received during blocking receiveResponse().
+     * Without this, any update arriving while waiting for an RPC response
+     * would be silently discarded.
+     *
+     * @var callable(array): void|null
+     */
+    private $updateFeedCallback = null;
+
     public function __construct(
         private readonly ConnectionInterface $connection,
         private readonly TransportInterface $transport,
@@ -77,6 +86,20 @@ final class RPCHandler
     {
         $this->apiId = $apiId;
         $this->apiHash = $apiHash;
+    }
+
+    /**
+     * Register a callback to receive updates that arrive during
+     * blocking receiveResponse() calls.
+     *
+     * The UpdateLoop sets this so that updates are not lost when
+     * user code calls $client->sendMessage() etc. inside a handler.
+     *
+     * @param callable(array): void $callback
+     */
+    public function setUpdateFeedCallback(callable $callback): void
+    {
+        $this->updateFeedCallback = $callback;
     }
 
     /**
@@ -342,6 +365,7 @@ final class RPCHandler
 
             // Check for result in container
             if (isset($result['results'])) {
+                $found = false;
                 foreach ($result['results'] as $r) {
                     if (isset($r['msg_id']) && $r['msg_id'] === $expectedMsgId) {
                         // Re-throw stored exceptions (RPC errors, bad_msg, etc.)
@@ -354,8 +378,21 @@ final class RPCHandler
                             return $r;
                         }
                         unset($this->pendingMessages[$expectedMsgId]);
-                        return $r['result'] ?? $r;
+                        $found = $r['result'] ?? $r;
+                    } elseif ($this->updateFeedCallback !== null) {
+                        // Forward any updates found in the container
+                        $inner = $r['result'] ?? $r;
+                        $this->forwardIfUpdate($inner);
                     }
+                }
+                if ($found !== false) {
+                    return $found;
+                }
+            } else {
+                // Single message that didn't match — forward if it's an update
+                if ($this->updateFeedCallback !== null) {
+                    $inner = $result['result'] ?? $result;
+                    $this->forwardIfUpdate($inner);
                 }
             }
 
@@ -750,6 +787,30 @@ final class RPCHandler
 
         $messageData = $this->serializer->serialize($message);
         $this->sendEncrypted($messageData, false);
+    }
+
+    /**
+     * Check if a deserialized result looks like a Telegram update
+     * container and, if so, forward it to the registered feed callback
+     * so it is not lost.
+     */
+    private function forwardIfUpdate(array $data): void
+    {
+        $constructor = $data['_'] ?? '';
+
+        static $updateTypes = [
+            'updates'              => true,
+            'updatesCombined'      => true,
+            'updateShort'          => true,
+            'updateShortMessage'   => true,
+            'updateShortChatMessage' => true,
+            'updateShortSentMessage' => true,
+            'updatesTooLong'       => true,
+        ];
+
+        if (isset($updateTypes[$constructor]) && $this->updateFeedCallback !== null) {
+            ($this->updateFeedCallback)($data);
+        }
     }
 
     /**

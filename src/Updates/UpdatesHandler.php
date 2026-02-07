@@ -4,493 +4,370 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Updates;
 
+use LaraGram\MTProto\Contracts\EventLoopInterface;
 use LaraGram\MTProto\Core\Client;
+use LaraGram\MTProto\Generated\Types\Message;
+use LaraGram\MTProto\Generated\Types\Update;
+use LaraGram\MTProto\TL\TLObject;
 
 /**
- * Handles incoming updates from Telegram.
- * 
- * This class manages:
- * - Receiving and parsing updates
- * - State management (pts, qts, date, seq)
- * - Gap handling and recovery
- * - Event dispatching
+ * High-level facade for the update listening system.
+ *
+ * This class wraps UpdateLoop + UpdateFeed + UpdateState and provides
+ * a clean, simple API for receiving Telegram updates as TLObjects.
+ *
+ * Usage:
+ *   $handler = new UpdatesHandler($client);
+ *
+ *   // Global handler — receives every update
+ *   $handler->onUpdate(function (TLObject $update, string $type) {
+ *       echo "[$type] " . json_encode($update) . "\n";
+ *   });
+ *
+ *   // Typed handler — IDE auto-completes all Message properties
+ *   $handler->onMessage(function (Message $message, Client $client) {
+ *       echo $message->message . "\n";              // text
+ *       echo $message->from_id->user_id . "\n";     // sender
+ *       echo $message->peer_id->channel_id . "\n";  // channel
+ *       echo $message->date . "\n";                 // timestamp
+ *       echo $message->media . "\n";                // media attachment
+ *   });
+ *
+ *   // Callback queries (typed as Update)
+ *   $handler->onCallbackQuery(function (Update $query, Client $client) {
+ *       echo $query->data . "\n";
+ *   });
+ *
+ *   // Generic string-based — still works for raw constructors
+ *   $handler->on('updateNewMessage', function (TLObject $data, Client $client) {
+ *       // ...
+ *   });
+ *
+ *   // Start listening (blocks)
+ *   $handler->start();
  */
 class UpdatesHandler
 {
-    /**
-     * Client instance.
-     */
-    private Client $client;
+    private UpdateLoop $loop;
+    private Client     $client;
 
     /**
-     * Current updates state.
+     * @param Client                  $client     Connected MTProto client.
+     * @param EventLoopInterface|null $eventLoop  Event loop driver (null = SyncEventLoop).
+     * @param array                   $options    Forwarded to UpdateLoop.
      */
-    private array $state = [
-        'pts' => 0,
-        'qts' => 0,
-        'date' => 0,
-        'seq' => 0,
-    ];
-
-    /**
-     * Registered event handlers.
-     * @var array<string, callable[]>
-     */
-    private array $handlers = [];
-
-    /**
-     * Pending updates queue.
-     */
-    private array $pendingUpdates = [];
-
-    /**
-     * Whether updates loop is running.
-     */
-    private bool $running = false;
-
-    /**
-     * Create a new UpdatesHandler instance.
-     */
-    public function __construct(Client $client)
+    public function __construct(Client $client, ?EventLoopInterface $eventLoop = null, array $options = [])
     {
         $this->client = $client;
+        $this->loop   = new UpdateLoop($client, $eventLoop, $options);
     }
 
-    /**
-     * Initialize updates state from server.
-     */
-    public function initialize(): void
-    {
-        $state = $this->client->invoke('updates.getState', []);
-        
-        $this->state = [
-            'pts' => $state['pts'] ?? 0,
-            'qts' => $state['qts'] ?? 0,
-            'date' => $state['date'] ?? 0,
-            'seq' => $state['seq'] ?? 0,
-        ];
-    }
+    // ════════════════════════════════════════════════════════════════════
+    //  Handler registration
+    // ════════════════════════════════════════════════════════════════════
 
     /**
-     * Get current state.
-     */
-    public function getState(): array
-    {
-        return $this->state;
-    }
-
-    /**
-     * Register an event handler.
+     * Set the main update handler.
      *
-     * @param string $event Event name (e.g., 'message', 'updateNewMessage')
-     * @param callable $handler Handler function
+     * @param callable(TLObject, string): void $callback
+     *   Receives the update as a TLObject and the raw constructor name.
      */
-    public function on(string $event, callable $handler): void
+    public function onUpdate(callable $callback): self
     {
-        $this->handlers[$event][] = $handler;
+        $this->loop->onUpdate($callback);
+        return $this;
     }
 
     /**
-     * Remove an event handler.
+     * Listen for a specific event.
+     *
+     * Semantic events:
+     *   'message'         — new message (user/group/channel)
+     *   'editedMessage'   — edited message
+     *   'deletedMessages' — deleted messages
+     *   'callbackQuery'   — inline button callback
+     *   'inlineQuery'     — inline query
+     *   'typing'          — user is typing
+     *   'readHistory'     — messages were read
+     *   'reactions'       — reactions changed
+     *   'userStatus'      — user online/offline
+     *   'chatParticipant' — member join/leave/promoted/banned
+     *   '*'               — wildcard: every update
+     *
+     * Raw constructor names also work:
+     *   'updateNewMessage', 'updateNewChannelMessage', etc.
+     *
+     * Callback signature:
+     *   function(TLObject $data, Client $client): void
+     *
+     * @param string   $event    Event name.
+     * @param callable $callback Handler function.
      */
-    public function off(string $event, ?callable $handler = null): void
+    public function on(string $event, callable $callback): self
     {
-        if ($handler === null) {
-            unset($this->handlers[$event]);
-        } else {
-            $this->handlers[$event] = array_filter(
-                $this->handlers[$event] ?? [],
-                fn($h) => $h !== $handler
-            );
-        }
+        $this->loop->on($event, $callback);
+        return $this;
     }
 
     /**
-     * Process incoming updates.
+     * Remove listener(s).
      */
-    public function processUpdates(array $updates): void
+    public function off(string $event, ?callable $callback = null): self
     {
-        $type = $updates['_'] ?? '';
-        
-        switch ($type) {
-            case 'updates':
-                $this->handleUpdates($updates);
-                break;
-                
-            case 'updatesCombined':
-                $this->handleUpdatesCombined($updates);
-                break;
-                
-            case 'updateShort':
-                $this->handleUpdateShort($updates);
-                break;
-                
-            case 'updateShortMessage':
-                $this->handleUpdateShortMessage($updates);
-                break;
-                
-            case 'updateShortChatMessage':
-                $this->handleUpdateShortChatMessage($updates);
-                break;
-                
-            case 'updateShortSentMessage':
-                $this->handleUpdateShortSentMessage($updates);
-                break;
-                
-            case 'updatesTooLong':
-                $this->handleUpdatesTooLong();
-                break;
-        }
+        $this->loop->off($event, $callback);
+        return $this;
+    }
+
+    // ── Typed convenience listeners ────────────────────────────────────
+    //  These provide full IDE auto-complete for callback parameters.
+
+    /**
+     * Listen for new messages (user/group/channel).
+     *
+     * The callback receives a fully-typed Message object with IDE auto-complete
+     * for all properties: id, peer_id, from_id, date, message, media, entities,
+     * views, replies, edit_date, fwd_from, reply_to, reply_markup, etc.
+     *
+     * Example:
+     *   $handler->onMessage(function (Message $message, Client $client) {
+     *       echo $message->message . "\n";            // text
+     *       echo $message->from_id->user_id . "\n";   // sender
+     *       echo $message->peer_id->channel_id . "\n"; // channel
+     *       echo $message->date . "\n";                // timestamp
+     *   });
+     *
+     * @param callable(Message, Client): void $callback
+     */
+    public function onMessage(callable $callback): self
+    {
+        $this->loop->onMessage($callback);
+        return $this;
     }
 
     /**
-     * Handle full updates object.
+     * Listen for edited messages.
+     *
+     * @param callable(Message, Client): void $callback
      */
-    private function handleUpdates(array $data): void
+    public function onEditedMessage(callable $callback): self
     {
-        // Update state
-        if (isset($data['seq']) && $data['seq'] > 0) {
-            if ($data['seq'] > $this->state['seq'] + 1) {
-                // Gap detected
-                $this->handleGap();
-                return;
-            }
-            $this->state['seq'] = $data['seq'];
-        }
-        
-        if (isset($data['date'])) {
-            $this->state['date'] = max($this->state['date'], $data['date']);
-        }
-
-        // Process users and chats first (for caching)
-        $this->processEntities($data['users'] ?? [], $data['chats'] ?? []);
-
-        // Process each update
-        foreach ($data['updates'] ?? [] as $update) {
-            $this->processSingleUpdate($update);
-        }
+        $this->loop->onEditedMessage($callback);
+        return $this;
     }
 
     /**
-     * Handle combined updates.
+     * Listen for deleted messages.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleUpdatesCombined(array $data): void
+    public function onDeletedMessages(callable $callback): self
     {
-        // Check sequence
-        if (isset($data['seq_start']) && $data['seq_start'] > $this->state['seq'] + 1) {
-            $this->handleGap();
-            return;
-        }
-
-        $this->handleUpdates($data);
+        $this->loop->onDeletedMessages($callback);
+        return $this;
     }
 
     /**
-     * Handle short update.
+     * Listen for inline button callback queries.
+     *
+     * Properties: user_id, peer, msg_id, chat_instance, data, game_short_name.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleUpdateShort(array $data): void
+    public function onCallbackQuery(callable $callback): self
     {
-        if (isset($data['date'])) {
-            $this->state['date'] = max($this->state['date'], $data['date']);
-        }
-
-        $this->processSingleUpdate($data['update']);
+        $this->loop->onCallbackQuery($callback);
+        return $this;
     }
 
     /**
-     * Handle short message update (incoming PM).
+     * Listen for inline bot queries.
+     *
+     * Properties: query_id, user_id, query, geo, peer_type, offset.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleUpdateShortMessage(array $data): void
+    public function onInlineQuery(callable $callback): self
     {
-        // Convert to full message format
-        $message = [
-            '_' => 'message',
-            'id' => $data['id'],
-            'from_id' => ['_' => 'peerUser', 'user_id' => $data['user_id']],
-            'peer_id' => ['_' => 'peerUser', 'user_id' => $data['user_id']],
-            'message' => $data['message'],
-            'date' => $data['date'],
-            'out' => $data['out'] ?? false,
-            'mentioned' => $data['mentioned'] ?? false,
-            'media_unread' => $data['media_unread'] ?? false,
-            'silent' => $data['silent'] ?? false,
-            'fwd_from' => $data['fwd_from'] ?? null,
-            'via_bot_id' => $data['via_bot_id'] ?? null,
-            'reply_to' => $data['reply_to'] ?? null,
-            'entities' => $data['entities'] ?? [],
-            'ttl_period' => $data['ttl_period'] ?? null,
-        ];
-
-        $this->processSingleUpdate([
-            '_' => 'updateNewMessage',
-            'message' => $message,
-            'pts' => $data['pts'],
-            'pts_count' => $data['pts_count'],
-        ]);
+        $this->loop->onInlineQuery($callback);
+        return $this;
     }
 
     /**
-     * Handle short chat message update.
+     * Listen for typing indicators.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleUpdateShortChatMessage(array $data): void
+    public function onTyping(callable $callback): self
     {
-        $message = [
-            '_' => 'message',
-            'id' => $data['id'],
-            'from_id' => ['_' => 'peerUser', 'user_id' => $data['from_id']],
-            'peer_id' => ['_' => 'peerChat', 'chat_id' => $data['chat_id']],
-            'message' => $data['message'],
-            'date' => $data['date'],
-            'out' => $data['out'] ?? false,
-            'mentioned' => $data['mentioned'] ?? false,
-            'media_unread' => $data['media_unread'] ?? false,
-            'silent' => $data['silent'] ?? false,
-            'fwd_from' => $data['fwd_from'] ?? null,
-            'via_bot_id' => $data['via_bot_id'] ?? null,
-            'reply_to' => $data['reply_to'] ?? null,
-            'entities' => $data['entities'] ?? [],
-            'ttl_period' => $data['ttl_period'] ?? null,
-        ];
-
-        $this->processSingleUpdate([
-            '_' => 'updateNewMessage',
-            'message' => $message,
-            'pts' => $data['pts'],
-            'pts_count' => $data['pts_count'],
-        ]);
+        $this->loop->onTyping($callback);
+        return $this;
     }
 
     /**
-     * Handle short sent message update.
+     * Listen for read history events.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleUpdateShortSentMessage(array $data): void
+    public function onReadHistory(callable $callback): self
     {
-        $this->dispatch('sentMessage', $data);
+        $this->loop->onReadHistory($callback);
+        return $this;
     }
 
     /**
-     * Handle updatesTooLong - need to fetch difference.
+     * Listen for message reaction changes.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleUpdatesTooLong(): void
+    public function onReactions(callable $callback): self
     {
-        $this->getDifference();
+        $this->loop->onReactions($callback);
+        return $this;
     }
 
     /**
-     * Handle gap in updates sequence.
+     * Listen for user online/offline status changes.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function handleGap(): void
+    public function onUserStatus(callable $callback): self
     {
-        $this->getDifference();
+        $this->loop->onUserStatus($callback);
+        return $this;
     }
 
     /**
-     * Fetch updates difference to recover from gap.
+     * Listen for chat/channel participant changes (join/leave/promoted/banned).
+     *
+     * @param callable(Update, Client): void $callback
      */
-    public function getDifference(): void
+    public function onChatParticipant(callable $callback): self
     {
-        $result = $this->client->invoke('updates.getDifference', [
-            'pts' => $this->state['pts'],
-            'date' => $this->state['date'],
-            'qts' => $this->state['qts'],
-        ]);
-
-        switch ($result['_'] ?? '') {
-            case 'updates.differenceEmpty':
-                $this->state['date'] = $result['date'];
-                $this->state['seq'] = $result['seq'];
-                break;
-
-            case 'updates.difference':
-                $this->processDifference($result);
-                $state = $result['state'];
-                $this->state = [
-                    'pts' => $state['pts'],
-                    'qts' => $state['qts'],
-                    'date' => $state['date'],
-                    'seq' => $state['seq'],
-                ];
-                break;
-
-            case 'updates.differenceSlice':
-                $this->processDifference($result);
-                $state = $result['intermediate_state'];
-                $this->state = [
-                    'pts' => $state['pts'],
-                    'qts' => $state['qts'],
-                    'date' => $state['date'],
-                    'seq' => $state['seq'],
-                ];
-                // More updates available, fetch again
-                $this->getDifference();
-                break;
-
-            case 'updates.differenceTooLong':
-                $this->state['pts'] = $result['pts'];
-                break;
-        }
+        $this->loop->onChatParticipant($callback);
+        return $this;
     }
 
     /**
-     * Process difference data.
+     * Listen for chosen inline results.
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function processDifference(array $data): void
+    public function onChosenInlineResult(callable $callback): self
     {
-        // Process entities
-        $this->processEntities($data['users'] ?? [], $data['chats'] ?? []);
-
-        // Process new messages
-        foreach ($data['new_messages'] ?? [] as $message) {
-            $this->dispatch('message', $message);
-            $this->dispatch('updateNewMessage', ['message' => $message]);
-        }
-
-        // Process encrypted messages
-        foreach ($data['new_encrypted_messages'] ?? [] as $message) {
-            $this->dispatch('encryptedMessage', $message);
-        }
-
-        // Process other updates
-        foreach ($data['other_updates'] ?? [] as $update) {
-            $this->processSingleUpdate($update);
-        }
+        $this->loop->onChosenInlineResult($callback);
+        return $this;
     }
 
     /**
-     * Process a single update.
+     * Listen for pre-checkout queries (payments).
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function processSingleUpdate(array $update): void
+    public function onPrecheckoutQuery(callable $callback): self
     {
-        $type = $update['_'] ?? '';
-        
-        // Update pts/qts state
-        if (isset($update['pts'])) {
-            $ptsCount = $update['pts_count'] ?? 1;
-            if ($update['pts'] > $this->state['pts']) {
-                $this->state['pts'] = $update['pts'];
-            }
-        }
-        if (isset($update['qts'])) {
-            $this->state['qts'] = max($this->state['qts'], $update['qts']);
-        }
-
-        // Dispatch to specific handler
-        $this->dispatch($type, $update);
-
-        // Also dispatch to generic handlers
-        switch ($type) {
-            case 'updateNewMessage':
-            case 'updateNewChannelMessage':
-                $this->dispatch('message', $update['message'] ?? $update);
-                break;
-                
-            case 'updateEditMessage':
-            case 'updateEditChannelMessage':
-                $this->dispatch('editedMessage', $update['message'] ?? $update);
-                break;
-                
-            case 'updateDeleteMessages':
-            case 'updateDeleteChannelMessages':
-                $this->dispatch('deletedMessages', $update);
-                break;
-                
-            case 'updateUserStatus':
-                $this->dispatch('userStatus', $update);
-                break;
-                
-            case 'updateUserTyping':
-            case 'updateChatUserTyping':
-            case 'updateChannelUserTyping':
-                $this->dispatch('typing', $update);
-                break;
-                
-            case 'updateReadHistoryInbox':
-            case 'updateReadHistoryOutbox':
-            case 'updateReadChannelInbox':
-            case 'updateReadChannelOutbox':
-                $this->dispatch('readHistory', $update);
-                break;
-                
-            case 'updateMessageReactions':
-                $this->dispatch('reactions', $update);
-                break;
-                
-            case 'updateBotCallbackQuery':
-            case 'updateInlineBotCallbackQuery':
-                $this->dispatch('callbackQuery', $update);
-                break;
-                
-            case 'updateBotInlineQuery':
-                $this->dispatch('inlineQuery', $update);
-                break;
-        }
+        $this->loop->onPrecheckoutQuery($callback);
+        return $this;
     }
 
     /**
-     * Process and cache entities.
+     * Listen for shipping queries (payments).
+     *
+     * @param callable(Update, Client): void $callback
      */
-    private function processEntities(array $users, array $chats): void
+    public function onShippingQuery(callable $callback): self
     {
-        // Cache users and chats for later use
-        foreach ($users as $user) {
-            $this->dispatch('user', $user);
-        }
-        foreach ($chats as $chat) {
-            $this->dispatch('chat', $chat);
-        }
+        $this->loop->onShippingQuery($callback);
+        return $this;
     }
 
-    /**
-     * Dispatch event to handlers.
-     */
-    private function dispatch(string $event, mixed $data): void
-    {
-        // Call specific handlers
-        foreach ($this->handlers[$event] ?? [] as $handler) {
-            try {
-                $handler($data, $this->client);
-            } catch (\Exception $e) {
-                // Log error but continue
-                $this->dispatch('error', [
-                    'event' => $event,
-                    'error' => $e->getMessage(),
-                    'data' => $data,
-                ]);
-            }
-        }
-
-        // Call wildcard handlers
-        foreach ($this->handlers['*'] ?? [] as $handler) {
-            try {
-                $handler($event, $data, $this->client);
-            } catch (\Exception $e) {
-                // Log error but continue
-            }
-        }
-    }
+    // ════════════════════════════════════════════════════════════════════
+    //  Lifecycle
+    // ════════════════════════════════════════════════════════════════════
 
     /**
-     * Start the updates loop.
+     * Start listening for updates. Blocks until stop() is called.
      */
     public function start(): void
     {
-        $this->running = true;
-        $this->initialize();
+        $this->loop->run();
     }
 
     /**
-     * Stop the updates loop.
+     * Stop listening.
      */
     public function stop(): void
     {
-        $this->running = false;
+        $this->loop->stop();
     }
 
     /**
-     * Check if running.
+     * Whether the loop is currently running.
      */
     public function isRunning(): bool
     {
-        return $this->running;
+        return $this->loop->isRunning();
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Advanced access
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get the underlying UpdateLoop.
+     */
+    public function getLoop(): UpdateLoop
+    {
+        return $this->loop;
+    }
+
+    /**
+     * Get the UpdateFeed.
+     */
+    public function getFeed(): UpdateFeed
+    {
+        return $this->loop->getFeed();
+    }
+
+    /**
+     * Get the UpdateState.
+     */
+    public function getState(): UpdateState
+    {
+        return $this->loop->getState();
+    }
+
+    /**
+     * Get current state as array (pts, qts, date, seq).
+     */
+    public function getStateArray(): array
+    {
+        return $this->loop->getState()->toArray();
+    }
+
+    /**
+     * Manually trigger a difference fetch (gap recovery).
+     */
+    public function fetchDifference(): void
+    {
+        $this->loop->getFeed()->fetchDifference();
+    }
+
+    /**
+     * Process a raw Updates container manually (useful for testing or
+     * feeding updates from a different source).
+     *
+     * @param array $data Raw deserialized Updates TL object.
+     */
+    public function processUpdates(array $data): void
+    {
+        $this->loop->getFeed()->feed($data);
+    }
+
+    /**
+     * Initialise state from server without starting the loop.
+     */
+    public function initialize(): void
+    {
+        $this->loop->getFeed()->initialise();
     }
 }
