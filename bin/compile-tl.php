@@ -365,8 +365,8 @@ foreach ($methodsByNs as $ns => $nsMethods) {
 
         // Params that the preprocessor auto-fills — skip from user-facing signature
         $autoSkip = [
-            'random_id'    => ['long'],       // auto-generated random value
-            'random_bytes' => ['bytes'],      // auto-generated random bytes
+            'random_id'    => ['long', 'int', 'bytes'], // auto-generated random value
+            'random_bytes' => ['bytes'],                // auto-generated random bytes
         ];
 
         foreach ($m->getParams() as $p) {
@@ -823,7 +823,7 @@ foreach ($allMethodsFlat as $fullTL => $info) {
 
     // Params that the preprocessor auto-fills — skip from IDE signature
     $autoSkipIde = [
-        'random_id'    => ['long'],
+        'random_id'    => ['long', 'int', 'bytes'],
         'random_bytes' => ['bytes'],
     ];
 

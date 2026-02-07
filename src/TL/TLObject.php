@@ -127,7 +127,33 @@ class TLObject implements \ArrayAccess, \JsonSerializable, \IteratorAggregate, \
      */
     public function toJson(int $flags = JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT): string
     {
-        return json_encode($this->data, $flags);
+        $result = json_encode($this->data, $flags | JSON_INVALID_UTF8_SUBSTITUTE);
+
+        if ($result === false) {
+            // Fallback: convert non-serializable values to string representation
+            return json_encode(
+                $this->sanitizeForJson($this->data),
+                $flags | JSON_INVALID_UTF8_SUBSTITUTE
+            ) ?: '{}';
+        }
+
+        return $result;
+    }
+
+    /**
+     * Recursively sanitize data for JSON encoding.
+     */
+    private function sanitizeForJson(mixed $data): mixed
+    {
+        if (is_array($data)) {
+            return array_map([$this, 'sanitizeForJson'], $data);
+        }
+
+        if (is_string($data) && !mb_check_encoding($data, 'UTF-8')) {
+            return '(binary:' . bin2hex($data) . ')';
+        }
+
+        return $data;
     }
 
     /**

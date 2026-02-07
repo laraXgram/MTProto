@@ -80,22 +80,22 @@ class ParamPreprocessor
 
             // ── Auto-resolve peer types ─────────────────────────────────
             if (in_array($type, self::PEER_TYPES, true)) {
-                if (isset($params[$name]) && !$this->isAlreadyTLObject($params[$name])) {
-                    $params[$name] = $this->resolvePeerParam($params[$name], $type);
+                if (isset($params[$name])) {
+                    if ($param->isVector() && is_array($params[$name])) {
+                        // Vector<InputPeer> — resolve each element
+                        $params[$name] = array_map(function ($item) use ($type) {
+                            return $this->isAlreadyTLObject($item) ? $item : $this->resolvePeerParam($item, $type);
+                        }, $params[$name]);
+                    } elseif (!$this->isAlreadyTLObject($params[$name])) {
+                        // Single peer
+                        $params[$name] = $this->resolvePeerParam($params[$name], $type);
+                    }
                 }
-
-                // Also handle Vector<InputPeer>, Vector<InputUser>, etc.
-                if ($param->isVector() && isset($params[$name]) && is_array($params[$name])) {
-                    $params[$name] = array_map(function ($item) use ($type) {
-                        return $this->isAlreadyTLObject($item) ? $item : $this->resolvePeerParam($item, $type);
-                    }, $params[$name]);
-                }
-
                 continue;
             }
 
             // ── Auto-generate random_id ─────────────────────────────────
-            if ($name === 'random_id' && $type === 'long' && !isset($params[$name])) {
+            if ($name === 'random_id' && in_array($type, ['long', 'int'], true) && !isset($params[$name])) {
                 if ($param->isVector()) {
                     // For forwardMessages: need one random_id per forwarded message
                     $count = count($params['id'] ?? []);
@@ -110,7 +110,8 @@ class ParamPreprocessor
             }
 
             // ── Auto-generate random_bytes ──────────────────────────────
-            if ($name === 'random_bytes' && $type === 'bytes' && !isset($params[$name])) {
+            // Covers both standalone 'random_bytes' param and 'random_id' of type 'bytes'
+            if ($type === 'bytes' && in_array($name, ['random_bytes', 'random_id'], true) && !isset($params[$name])) {
                 $params[$name] = random_bytes(256);
                 continue;
             }

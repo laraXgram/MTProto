@@ -148,6 +148,11 @@ class PeerResolver
     {
         // ── Numeric id ─────────────────────────────────────────────────
         if (is_int($peer)) {
+            // Bot API negative ID format: -100xxxx = channel/supergroup, -xxxx = basic group
+            if ($peer < 0) {
+                $peer = $this->normalizeBotApiId($peer);
+            }
+
             $entry = $this->peerDb->getPeer($peer);
             if ($entry !== null) {
                 return $entry;
@@ -251,5 +256,30 @@ class PeerResolver
         } catch (\Throwable $e) {
             error_log("[PeerResolver] Failed to resolve @{$username}: {$e->getMessage()}");
         }
+    }
+
+    // ================================================================
+    //  Bot API ID normalization
+    // ================================================================
+
+    /**
+     * Convert Bot API negative IDs to MTProto raw IDs.
+     *
+     * Bot API uses:
+     *  -100xxxxxxxxxx  → channel/supergroup (strip -100 prefix)
+     *  -xxxxxxxxxx     → basic group chat (negate)
+     *
+     * @param int $id Negative Bot API ID
+     * @return int    Positive MTProto raw ID
+     */
+    private function normalizeBotApiId(int $id): int
+    {
+        // Channel/supergroup: -100xxxx → xxxx
+        if ($id <= -1000000000000) {
+            return -($id + 1000000000000);
+        }
+
+        // Basic group: -xxxx → xxxx
+        return -$id;
     }
 }
