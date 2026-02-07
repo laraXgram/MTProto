@@ -28,6 +28,8 @@ use LaraGram\MTProto\Transport\AbridgedTransport;
  *   // or fluent:
  *   $me = $client->users->getFullUser(['id' => ['_' => 'inputUserSelf']]);
  *   $client->disconnect();
+ *
+ * @mixin \LaraGram\MTProto\Generated\ClientIdeHelper
  */
 class Client
 {

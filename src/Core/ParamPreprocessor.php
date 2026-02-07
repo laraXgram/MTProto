@@ -13,20 +13,31 @@ use LaraGram\MTProto\TL\TLParser;
  * and applies these transformations:
  *
  *  1. **InputPeer / InputUser / InputChannel resolution**
- *     If a parameter has an Input* TL type and the user passed a simple
- *     int or string, it is automatically resolved via PeerResolver.
+ *     int|string → auto-resolved via PeerResolver
  *
  *  2. **random_id auto-generation**
- *     If the method requires `random_id:long` (or a vector of them) and
- *     the caller did not provide it, a cryptographically random value is
- *     generated automatically.
+ *     long (or Vector<long>) → cryptographically random value
  *
- *  3. **reply_to shorthand**
- *     If `reply_to` is passed as a plain int, it is wrapped into
- *     `inputReplyToMessage{reply_to_msg_id: ...}` automatically.
+ *  3. **random_bytes auto-generation**
+ *     bytes → random_bytes(256) for secure methods
  *
- *  4. **InputMedia shorthand**
- *     (Reserved for future expansion.)
+ *  4. **reply_to shorthand**
+ *     int → inputReplyToMessage{reply_to_msg_id: ...}
+ *
+ *  5. **DataJSON auto-wrapping**
+ *     mixed → ['_' => 'dataJSON', 'data' => json_encode($value)]
+ *
+ *  6. **InputMessage int shorthand**
+ *     int → ['_' => 'inputMessageID', 'id' => $value]
+ *
+ *  7. **InputDialogPeer auto-wrapping**
+ *     int|string → resolves peer then wraps in inputDialogPeer
+ *
+ *  8. **TextWithEntities string shorthand**
+ *     string → ['_' => 'textWithEntities', 'text' => $value, 'entities' => []]
+ *
+ *  9. **DateTime → timestamp conversion**
+ *     DateTimeInterface → int unix timestamp for schedule_date etc.
  */
 class ParamPreprocessor
 {
@@ -98,6 +109,12 @@ class ParamPreprocessor
                 continue;
             }
 
+            // ── Auto-generate random_bytes ──────────────────────────────
+            if ($name === 'random_bytes' && $type === 'bytes' && !isset($params[$name])) {
+                $params[$name] = random_bytes(256);
+                continue;
+            }
+
             // ── reply_to shorthand (int → inputReplyToMessage) ──────────
             if ($name === 'reply_to' && $type === 'InputReplyTo') {
                 if (isset($params[$name]) && is_int($params[$name])) {
@@ -106,6 +123,77 @@ class ParamPreprocessor
                         'reply_to_msg_id' => $params[$name],
                     ];
                 }
+                continue;
+            }
+
+            // ── DataJSON auto-wrapping (mixed → dataJSON constructor) ───
+            if ($type === 'DataJSON' && isset($params[$name])) {
+                if (!$this->isAlreadyTLObject($params[$name])) {
+                    $params[$name] = [
+                        '_'    => 'dataJSON',
+                        'data' => is_string($params[$name]) ? $params[$name] : json_encode($params[$name]),
+                    ];
+                }
+                continue;
+            }
+
+            // ── InputMessage shorthand (int → inputMessageID) ───────────
+            if ($type === 'InputMessage' && isset($params[$name])) {
+                if (is_int($params[$name])) {
+                    $params[$name] = [
+                        '_'  => 'inputMessageID',
+                        'id' => $params[$name],
+                    ];
+                }
+                // Handle Vector<InputMessage>
+                if ($param->isVector() && is_array($params[$name])) {
+                    $params[$name] = array_map(function ($item) {
+                        if (is_int($item)) {
+                            return ['_' => 'inputMessageID', 'id' => $item];
+                        }
+                        return $item;
+                    }, $params[$name]);
+                }
+                continue;
+            }
+
+            // ── InputDialogPeer auto-wrapping ───────────────────────────
+            if ($type === 'InputDialogPeer' && isset($params[$name])) {
+                if (!$this->isAlreadyTLObject($params[$name])) {
+                    $peer = $this->resolvePeerParam($params[$name], 'InputPeer');
+                    $params[$name] = [
+                        '_'    => 'inputDialogPeer',
+                        'peer' => $peer,
+                    ];
+                }
+                // Handle Vector<InputDialogPeer>
+                if ($param->isVector() && is_array($params[$name])) {
+                    $params[$name] = array_map(function ($item) {
+                        if (!$this->isAlreadyTLObject($item)) {
+                            $peer = $this->resolvePeerParam($item, 'InputPeer');
+                            return ['_' => 'inputDialogPeer', 'peer' => $peer];
+                        }
+                        return $item;
+                    }, $params[$name]);
+                }
+                continue;
+            }
+
+            // ── TextWithEntities string shorthand ───────────────────────
+            if ($type === 'TextWithEntities' && isset($params[$name])) {
+                if (is_string($params[$name])) {
+                    $params[$name] = [
+                        '_'        => 'textWithEntities',
+                        'text'     => $params[$name],
+                        'entities' => [],
+                    ];
+                }
+                continue;
+            }
+
+            // ── DateTime → timestamp conversion ─────────────────────────
+            if ($type === 'int' && isset($params[$name]) && $params[$name] instanceof \DateTimeInterface) {
+                $params[$name] = $params[$name]->getTimestamp();
                 continue;
             }
         }
