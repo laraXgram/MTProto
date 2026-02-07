@@ -32,6 +32,39 @@ $SCHEMAS    = ['main_api.tl'];
 $NAMESPACE_BASE = 'LaraGram\\MTProto\\Generated';
 
 // ════════════════════════════════════════════════════════════════════════════
+//  Smart defaults — params that are technically "required" in TL schema
+//  but have obvious sensible defaults. These become optional in PHP.
+//  Format: paramName => [ tlType => phpDefaultLiteral ]
+// ════════════════════════════════════════════════════════════════════════════
+
+$PARAM_DEFAULTS = [
+    'hash'         => ['int' => '0', 'long' => '0'],
+    'limit'        => ['int' => '100'],
+    'offset_id'    => ['int' => '0', 'long' => '0'],
+    'offset_date'  => ['int' => '0'],
+    'add_offset'   => ['int' => '0'],
+    'max_id'       => ['int' => '0', 'long' => '0'],
+    'min_id'       => ['int' => '0', 'long' => '0'],
+    'offset'       => ['int' => '0', 'long' => '0', 'string' => "''"],
+    'offset_peer'  => ['InputPeer' => "['_' => 'inputPeerEmpty']"],
+    'offset_rate'  => ['int' => '0'],
+    'min_date'     => ['int' => '0'],
+    'max_date'     => ['int' => '0'],
+    'offset_topic' => ['int' => '0'],
+    'filter'       => ['MessagesFilter' => "['_' => 'inputMessagesFilterEmpty']"],
+];
+
+// Methods where 'hash' is NOT a cache hash — never auto-default
+$HASH_EXCLUSIONS = [
+    'account.resetAuthorization',
+    'account.resetWebAuthorization',
+    'account.changeAuthorizationSettings',
+    'messages.checkChatInvite',
+    'messages.importChatInvite',
+    'account.sendConfirmPhoneCode',
+];
+
+// ════════════════════════════════════════════════════════════════════════════
 //  TL Type → PHP Type mapping
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -328,6 +361,7 @@ foreach ($methodsByNs as $ns => $nsMethods) {
         $optionalParams = [];
         $paramNames     = []; // For building the invoke array (in original TL order)
         $docParams      = []; // @param lines
+        $smartDefaults  = []; // paramName => true — always include in $__args (not skippable)
 
         // Params that the preprocessor auto-fills — skip from user-facing signature
         $autoSkip = [
@@ -386,19 +420,37 @@ foreach ($methodsByNs as $ns => $nsMethods) {
 
             $paramNames[] = $pName;
 
+            // ── Smart defaults: make TL-required params optional in PHP ──
+            $smartDefault = null;
+            if (!$isOptional && isset($PARAM_DEFAULTS[$pName][$pType])) {
+                // Exclude methods where the param has different semantics
+                $excluded = ($pName === 'hash' && in_array($fullTL, $HASH_EXCLUSIONS, true));
+                if (!$excluded) {
+                    $smartDefault = $PARAM_DEFAULTS[$pName][$pType];
+                    $isOptional = true;
+                    $smartDefaults[$pName] = $smartDefault;
+                }
+            }
+
             if ($isOptional) {
                 $default = match (true) {
-                    $pType === 'true'  => 'false',
-                    default            => 'null',
+                    $smartDefault !== null  => $smartDefault,
+                    $pType === 'true'       => 'false',
+                    default                 => 'null',
                 };
                 if ($pType === 'true') {
                     $phpSig = "bool \${$pName} = {$default}";
+                } elseif ($smartDefault !== null) {
+                    // Smart default: keep original type (no |null), use actual default
+                    $phpSig = "{$phpType} \${$pName} = {$default}";
                 } elseif ($phpType === 'mixed') {
                     $phpSig = "mixed \${$pName} = null";
                 } else {
                     $phpSig = "{$phpType}|null \${$pName} = null";
                 }
-                if ($docHint === 'mixed') {
+                if ($smartDefault !== null) {
+                    $docParams[] = "     * @param {$docHint} \${$pName} [default: {$default}]";
+                } elseif ($docHint === 'mixed') {
                     $docParams[] = "     * @param mixed \${$pName}";
                 } else {
                     $docParams[] = "     * @param {$docHint}|null \${$pName}";
@@ -475,7 +527,10 @@ foreach ($methodsByNs as $ns => $nsMethods) {
                     }
                 }
 
-                if ($origParam && $origParam->isOptional()) {
+                // Smart-defaulted params always get included (value is never null)
+                if (isset($smartDefaults[$pn])) {
+                    $buf .= "        \$__args['{$pn}'] = \${$pn};\n";
+                } elseif ($origParam && $origParam->isOptional()) {
                     if ($origParam->getType() === 'true') {
                         // Boolean flags: only include if true
                         $buf .= "        if (\${$pn}) \$__args['{$pn}'] = \${$pn};\n";
@@ -804,12 +859,26 @@ foreach ($allMethodsFlat as $fullTL => $info) {
         }
 
         $isOpt = $p->isOptional() || $pt === 'true';
+
+        // Smart defaults: make TL-required params optional
+        $smartDef = null;
+        if (!$isOpt && isset($PARAM_DEFAULTS[$pn][$pt])) {
+            $excluded = ($pn === 'hash' && in_array($fullTL, $HASH_EXCLUSIONS, true));
+            if (!$excluded) {
+                $smartDef = $PARAM_DEFAULTS[$pn][$pt];
+                $isOpt = true;
+            }
+        }
+
         if ($isOpt) {
-            $default = ($pt === 'true') ? 'false' : 'null';
-            if ($docType === 'mixed') {
-                $optionalParts[] = "mixed \${$pn} = {$default}";
+            if ($smartDef !== null) {
+                $optionalParts[] = "{$docType} \${$pn} = {$smartDef}";
+            } elseif ($pt === 'true') {
+                $optionalParts[] = "bool \${$pn} = false";
+            } elseif ($docType === 'mixed') {
+                $optionalParts[] = "mixed \${$pn} = null";
             } else {
-                $optionalParts[] = "{$docType}|null \${$pn} = {$default}";
+                $optionalParts[] = "{$docType}|null \${$pn} = null";
             }
         } else {
             $requiredParts[] = "{$docType} \${$pn}";
