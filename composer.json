@@ -20,10 +20,15 @@
         "ext-mbstring": "*",
         "ext-openssl": "*",
         "ext-sockets": "*",
-        "ext-zlib": "*",
-        "openswoole/core": "22.1.5",
-        "revolt/event-loop": "^1.0",
-        "swoole/ide-helper": "^6.0"
+        "ext-zlib": "*"
+    },
+    "suggest": {
+        "ext-swoole": "For better performance and features. (SwooleDriver)",
+        "ext-openswoole": "For better performance and features. (SwooleDriver)",
+        "ext-pcntl": "For better performance and features. (ForkDriver)",
+        "revolt/event-loop": "For better performance and features. (AMPHPDriver)",
+        "openswoole/core": "Openswoole IDE Helper for better development experience.",
+        "swoole/ide-helper": "Swoole IDE Helper for better development experience."
     },
     "autoload": {
         "psr-4": {
@@ -33,7 +38,23 @@
     "extra": {
         "branch-alias": {
             "dev-master": "0.x-dev"
+        },
+        "laragram": {
+            "providers": [
+                "LaraGram\\MTProto\\Foundation\\ClientServiceProvider"
+            ]
         }
+    },
+    "scripts": {
+        "post-update-cmd": [
+            "@php bin/compile-tl.php"
+        ],
+        "post-root-package-install": [
+            "@php bin/compile-tl.php"
+        ],
+        "compile-tl": [
+            "@php bin/compile-tl.php"
+        ]
     },
     "config": {
         "sort-packages": true
