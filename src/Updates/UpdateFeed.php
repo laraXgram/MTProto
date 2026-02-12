@@ -86,10 +86,35 @@ class UpdateFeed
     /**
      * Register a handler for a specific event type.
      *
-     * Supported built-in events:
-     *   'message', 'editedMessage', 'deletedMessages', 'callbackQuery',
-     *   'inlineQuery', 'typing', 'readHistory', 'reactions',
-     *   'userStatus', 'chatParticipant', '*' (wildcard)
+     * Supported built-in semantic events:
+     *   'message', 'editedMessage', 'deletedMessages', 'messageId',
+     *   'pinnedMessages', 'readContents', 'messageViews', 'messageForwards',
+     *   'messageExtendedMedia', 'transcribedAudio', 'geoLiveViewed',
+     *   'scheduledMessage', 'deleteScheduled',
+     *   'poll', 'pollVote', 'webPage',
+     *   'readHistory', 'readDiscussion',
+     *   'callbackQuery', 'inlineQuery', 'chosenInlineResult',
+     *   'typing', 'reactions',
+     *   'userStatus', 'userName', 'userPhone', 'userEmojiStatus', 'userUpdate',
+     *   'chatParticipant', 'chatParticipants', 'chatParticipantAdd',
+     *   'chatParticipantDelete', 'chatParticipantAdmin', 'chatDefaultBanned',
+     *   'chatUpdate', 'channelUpdate', 'channelTooLong', 'channelAvailableMessages',
+     *   'precheckoutQuery', 'shippingQuery',
+     *   'phoneCall', 'phoneCallSignaling',
+     *   'groupCall', 'groupCallParticipants', 'groupCallConnection',
+     *   'story', 'readStories', 'storyId', 'storiesStealthMode', 'storyReaction',
+     *   'encryptedMessage', 'encryptedChatTyping', 'encryption', 'encryptedRead',
+     *   'draft', 'notifySettings', 'serviceNotification', 'privacy',
+     *   'dialogPinned', 'pinnedDialogs', 'dialogUnreadMark', 'dialogFilter',
+     *   'botStopped', 'botCommands', 'botMenu', 'chatJoinRequest', 'chatBoost',
+     *   'botReaction', 'botReactions',
+     *   'botBusinessConnect', 'botBusinessMessage', 'botBusinessEdit', 'botBusinessDelete',
+     *   'peerSettings', 'peerBlocked', 'peerLocated',
+     *   'newAuthorization', 'loginToken',
+     *   'starsBalance', 'starsRevenue',
+     *   'config', 'dcOptions', 'theme',
+     *   'sentMessage', 'error',
+     *   '*' (wildcard — fires for every update)
      *
      * You can also listen to raw constructor names:
      *   'updateNewMessage', 'updateNewChannelMessage', etc.
@@ -247,6 +272,146 @@ class UpdateFeed
     public function onShippingQuery(callable $callback): void
     {
         $this->listeners['shippingQuery'][] = $callback;
+    }
+
+    /**
+     * Listen for poll updates.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onPoll(callable $callback): void
+    {
+        $this->listeners['poll'][] = $callback;
+    }
+
+    /**
+     * Listen for poll vote events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onPollVote(callable $callback): void
+    {
+        $this->listeners['pollVote'][] = $callback;
+    }
+
+    /**
+     * Listen for pinned message events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onPinnedMessages(callable $callback): void
+    {
+        $this->listeners['pinnedMessages'][] = $callback;
+    }
+
+    /**
+     * Listen for phone call events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onPhoneCall(callable $callback): void
+    {
+        $this->listeners['phoneCall'][] = $callback;
+    }
+
+    /**
+     * Listen for group call events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onGroupCall(callable $callback): void
+    {
+        $this->listeners['groupCall'][] = $callback;
+    }
+
+    /**
+     * Listen for story events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onStory(callable $callback): void
+    {
+        $this->listeners['story'][] = $callback;
+    }
+
+    /**
+     * Listen for new encrypted messages (secret chats).
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onEncryptedMessage(callable $callback): void
+    {
+        $this->listeners['encryptedMessage'][] = $callback;
+    }
+
+    /**
+     * Listen for draft message changes.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onDraft(callable $callback): void
+    {
+        $this->listeners['draft'][] = $callback;
+    }
+
+    /**
+     * Listen for service notifications from Telegram.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onServiceNotification(callable $callback): void
+    {
+        $this->listeners['serviceNotification'][] = $callback;
+    }
+
+    /**
+     * Listen for bot stopped/started events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onBotStopped(callable $callback): void
+    {
+        $this->listeners['botStopped'][] = $callback;
+    }
+
+    /**
+     * Listen for chat join request events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onChatJoinRequest(callable $callback): void
+    {
+        $this->listeners['chatJoinRequest'][] = $callback;
+    }
+
+    /**
+     * Listen for chat boost events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onChatBoost(callable $callback): void
+    {
+        $this->listeners['chatBoost'][] = $callback;
+    }
+
+    /**
+     * Listen for peer blocked/unblocked events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onPeerBlocked(callable $callback): void
+    {
+        $this->listeners['peerBlocked'][] = $callback;
+    }
+
+    /**
+     * Listen for new authorization events.
+     *
+     * @param callable(Update, Client): void $callback
+     */
+    public function onNewAuthorization(callable $callback): void
+    {
+        $this->listeners['newAuthorization'][] = $callback;
     }
 
     /**
@@ -499,40 +664,211 @@ class UpdateFeed
         // 2. Specific raw-constructor listeners
         $this->dispatchEvent($type, $wrapped);
 
-        // 3. Semantic aliases
+        // 3. Semantic aliases — map raw constructors to friendly event names
         match ($type) {
+            // ── Messages ───────────────────────────────────────────────
             'updateNewMessage',
-            'updateNewChannelMessage'       => $this->dispatchEvent('message', $this->extractMessage($wrapped)),
+            'updateNewChannelMessage'           => $this->dispatchEvent('message', $this->extractMessage($wrapped)),
 
             'updateEditMessage',
-            'updateEditChannelMessage'      => $this->dispatchEvent('editedMessage', $this->extractMessage($wrapped)),
+            'updateEditChannelMessage'          => $this->dispatchEvent('editedMessage', $this->extractMessage($wrapped)),
 
             'updateDeleteMessages',
-            'updateDeleteChannelMessages'   => $this->dispatchEvent('deletedMessages', $wrapped),
+            'updateDeleteChannelMessages'       => $this->dispatchEvent('deletedMessages', $wrapped),
 
-            'updateBotCallbackQuery',
-            'updateInlineBotCallbackQuery'  => $this->dispatchEvent('callbackQuery', $wrapped),
+            'updateMessageID'                   => $this->dispatchEvent('messageId', $wrapped),
 
-            'updateBotInlineQuery'          => $this->dispatchEvent('inlineQuery', $wrapped),
+            'updatePinnedMessages',
+            'updatePinnedChannelMessages'       => $this->dispatchEvent('pinnedMessages', $wrapped),
 
-            'updateUserTyping',
-            'updateChatUserTyping',
-            'updateChannelUserTyping'       => $this->dispatchEvent('typing', $wrapped),
+            'updateReadMessagesContents',
+            'updateChannelReadMessagesContents' => $this->dispatchEvent('readContents', $wrapped),
 
+            'updateChannelMessageViews'         => $this->dispatchEvent('messageViews', $wrapped),
+            'updateChannelMessageForwards'      => $this->dispatchEvent('messageForwards', $wrapped),
+            'updateMessageExtendedMedia'        => $this->dispatchEvent('messageExtendedMedia', $wrapped),
+            'updateTranscribedAudio'            => $this->dispatchEvent('transcribedAudio', $wrapped),
+            'updateGeoLiveViewed'               => $this->dispatchEvent('geoLiveViewed', $wrapped),
+
+            'updateNewScheduledMessage'         => $this->dispatchEvent('scheduledMessage', $wrapped),
+            'updateDeleteScheduledMessages'     => $this->dispatchEvent('deleteScheduled', $wrapped),
+
+            // ── Polls ──────────────────────────────────────────────────
+            'updateMessagePoll'                 => $this->dispatchEvent('poll', $wrapped),
+            'updateMessagePollVote'             => $this->dispatchEvent('pollVote', $wrapped),
+
+            // ── Web pages ──────────────────────────────────────────────
+            'updateWebPage',
+            'updateChannelWebPage'              => $this->dispatchEvent('webPage', $wrapped),
+
+            // ── Read history ───────────────────────────────────────────
             'updateReadHistoryInbox',
             'updateReadHistoryOutbox',
             'updateReadChannelInbox',
-            'updateReadChannelOutbox'       => $this->dispatchEvent('readHistory', $wrapped),
+            'updateReadChannelOutbox'           => $this->dispatchEvent('readHistory', $wrapped),
 
-            'updateMessageReactions'        => $this->dispatchEvent('reactions', $wrapped),
-            'updateUserStatus'              => $this->dispatchEvent('userStatus', $wrapped),
+            'updateReadChannelDiscussionInbox',
+            'updateReadChannelDiscussionOutbox' => $this->dispatchEvent('readDiscussion', $wrapped),
 
+            // ── Callback / Inline ──────────────────────────────────────
+            'updateBotCallbackQuery',
+            'updateInlineBotCallbackQuery'      => $this->dispatchEvent('callbackQuery', $wrapped),
+
+            'updateBotInlineQuery'              => $this->dispatchEvent('inlineQuery', $wrapped),
+            'updateBotInlineSend'               => $this->dispatchEvent('chosenInlineResult', $wrapped),
+
+            // ── Typing ─────────────────────────────────────────────────
+            'updateUserTyping',
+            'updateChatUserTyping',
+            'updateChannelUserTyping'           => $this->dispatchEvent('typing', $wrapped),
+
+            // ── Reactions ──────────────────────────────────────────────
+            'updateMessageReactions'            => $this->dispatchEvent('reactions', $wrapped),
+
+            // ── Users ──────────────────────────────────────────────────
+            'updateUserStatus'                  => $this->dispatchEvent('userStatus', $wrapped),
+            'updateUserName'                    => $this->dispatchEvent('userName', $wrapped),
+            'updateUserPhone'                   => $this->dispatchEvent('userPhone', $wrapped),
+            'updateUserEmojiStatus'             => $this->dispatchEvent('userEmojiStatus', $wrapped),
+            'updateUser'                        => $this->dispatchEvent('userUpdate', $wrapped),
+
+            // ── Chats / Channels ───────────────────────────────────────
             'updateChatParticipant',
-            'updateChannelParticipant'      => $this->dispatchEvent('chatParticipant', $wrapped),
+            'updateChannelParticipant'          => $this->dispatchEvent('chatParticipant', $wrapped),
 
-            'updateBotInlineSend'           => $this->dispatchEvent('chosenInlineResult', $wrapped),
-            'updateBotPrecheckoutQuery'     => $this->dispatchEvent('precheckoutQuery', $wrapped),
-            'updateBotShippingQuery'        => $this->dispatchEvent('shippingQuery', $wrapped),
+            'updateChatParticipants'            => $this->dispatchEvent('chatParticipants', $wrapped),
+            'updateChatParticipantAdd'          => $this->dispatchEvent('chatParticipantAdd', $wrapped),
+            'updateChatParticipantDelete'       => $this->dispatchEvent('chatParticipantDelete', $wrapped),
+            'updateChatParticipantAdmin'        => $this->dispatchEvent('chatParticipantAdmin', $wrapped),
+            'updateChatDefaultBannedRights'     => $this->dispatchEvent('chatDefaultBanned', $wrapped),
+            'updateChat'                        => $this->dispatchEvent('chatUpdate', $wrapped),
+            'updateChannel'                     => $this->dispatchEvent('channelUpdate', $wrapped),
+            'updateChannelTooLong'              => $this->dispatchEvent('channelTooLong', $wrapped),
+            'updateChannelAvailableMessages'    => $this->dispatchEvent('channelAvailableMessages', $wrapped),
+            'updateChannelViewForumAsMessages'  => $this->dispatchEvent('channelViewForumAsMessages', $wrapped),
+
+            // ── Payments ───────────────────────────────────────────────
+            'updateBotPrecheckoutQuery'         => $this->dispatchEvent('precheckoutQuery', $wrapped),
+            'updateBotShippingQuery'            => $this->dispatchEvent('shippingQuery', $wrapped),
+
+            // ── Phone calls ────────────────────────────────────────────
+            'updatePhoneCall'                   => $this->dispatchEvent('phoneCall', $wrapped),
+            'updatePhoneCallSignalingData'      => $this->dispatchEvent('phoneCallSignaling', $wrapped),
+
+            // ── Group calls ────────────────────────────────────────────
+            'updateGroupCall'                   => $this->dispatchEvent('groupCall', $wrapped),
+            'updateGroupCallParticipants'       => $this->dispatchEvent('groupCallParticipants', $wrapped),
+            'updateGroupCallConnection'         => $this->dispatchEvent('groupCallConnection', $wrapped),
+
+            // ── Stories ────────────────────────────────────────────────
+            'updateStory'                       => $this->dispatchEvent('story', $wrapped),
+            'updateReadStories'                 => $this->dispatchEvent('readStories', $wrapped),
+            'updateStoryID'                     => $this->dispatchEvent('storyId', $wrapped),
+            'updateStoriesStealthMode'          => $this->dispatchEvent('storiesStealthMode', $wrapped),
+            'updateSentStoryReaction',
+            'updateNewStoryReaction'            => $this->dispatchEvent('storyReaction', $wrapped),
+
+            // ── Encrypted (Secret chats) ───────────────────────────────
+            'updateNewEncryptedMessage'         => $this->dispatchEvent('encryptedMessage', $wrapped),
+            'updateEncryptedChatTyping'         => $this->dispatchEvent('encryptedChatTyping', $wrapped),
+            'updateEncryption'                  => $this->dispatchEvent('encryption', $wrapped),
+            'updateEncryptedMessagesRead'       => $this->dispatchEvent('encryptedRead', $wrapped),
+
+            // ── Drafts ─────────────────────────────────────────────────
+            'updateDraftMessage'                => $this->dispatchEvent('draft', $wrapped),
+
+            // ── Notifications & Settings ───────────────────────────────
+            'updateNotifySettings'              => $this->dispatchEvent('notifySettings', $wrapped),
+            'updateServiceNotification'         => $this->dispatchEvent('serviceNotification', $wrapped),
+            'updatePrivacy'                     => $this->dispatchEvent('privacy', $wrapped),
+
+            // ── Dialogs & Folders ──────────────────────────────────────
+            'updateDialogPinned'                => $this->dispatchEvent('dialogPinned', $wrapped),
+            'updatePinnedDialogs'               => $this->dispatchEvent('pinnedDialogs', $wrapped),
+            'updateDialogUnreadMark'            => $this->dispatchEvent('dialogUnreadMark', $wrapped),
+            'updateDialogFilter'                => $this->dispatchEvent('dialogFilter', $wrapped),
+            'updateDialogFilterOrder'           => $this->dispatchEvent('dialogFilterOrder', $wrapped),
+            'updateDialogFilters'               => $this->dispatchEvent('dialogFilters', $wrapped),
+            'updateFolderPeers'                 => $this->dispatchEvent('folderPeers', $wrapped),
+            'updateSavedDialogPinned'           => $this->dispatchEvent('savedDialogPinned', $wrapped),
+            'updatePinnedSavedDialogs'          => $this->dispatchEvent('pinnedSavedDialogs', $wrapped),
+
+            // ── Bots ───────────────────────────────────────────────────
+            'updateBotStopped'                  => $this->dispatchEvent('botStopped', $wrapped),
+            'updateBotCommands'                 => $this->dispatchEvent('botCommands', $wrapped),
+            'updateBotMenuButton'               => $this->dispatchEvent('botMenu', $wrapped),
+            'updateBotChatInviteRequester'      => $this->dispatchEvent('chatJoinRequest', $wrapped),
+            'updateBotChatBoost'                => $this->dispatchEvent('chatBoost', $wrapped),
+            'updateBotMessageReaction'          => $this->dispatchEvent('botReaction', $wrapped),
+            'updateBotMessageReactions'         => $this->dispatchEvent('botReactions', $wrapped),
+            'updateBotPurchasedPaidMedia'       => $this->dispatchEvent('botPurchasedPaid', $wrapped),
+            'updateBotWebhookJSON'              => $this->dispatchEvent('botWebhook', $wrapped),
+            'updateBotWebhookJSONQuery'         => $this->dispatchEvent('botWebhookQuery', $wrapped),
+            'updateWebViewResultSent'           => $this->dispatchEvent('webviewResultSent', $wrapped),
+            'updateAttachMenuBots'              => $this->dispatchEvent('attachMenuBots', $wrapped),
+
+            // ── Bot Business ───────────────────────────────────────────
+            'updateBotBusinessConnect'          => $this->dispatchEvent('botBusinessConnect', $wrapped),
+            'updateBotNewBusinessMessage'       => $this->dispatchEvent('botBusinessMessage', $wrapped),
+            'updateBotEditBusinessMessage'      => $this->dispatchEvent('botBusinessEdit', $wrapped),
+            'updateBotDeleteBusinessMessage'    => $this->dispatchEvent('botBusinessDelete', $wrapped),
+            'updateBusinessBotCallbackQuery'    => $this->dispatchEvent('businessCallback', $wrapped),
+
+            // ── Stickers & Emoji ───────────────────────────────────────
+            'updateNewStickerSet'               => $this->dispatchEvent('newStickerSet', $wrapped),
+            'updateStickerSetsOrder',
+            'updateMoveStickerSetToTop'         => $this->dispatchEvent('stickerSetsOrder', $wrapped),
+            'updateStickerSets'                 => $this->dispatchEvent('stickerSets', $wrapped),
+            'updateSavedGifs'                   => $this->dispatchEvent('savedGifs', $wrapped),
+            'updateFavedStickers'               => $this->dispatchEvent('favedStickers', $wrapped),
+            'updateRecentStickers',
+            'updateReadFeaturedStickers',
+            'updateReadFeaturedEmojiStickers',
+            'updateRecentEmojiStatuses',
+            'updateRecentReactions',
+            'updateSavedReactionTags',
+            'updateSavedRingtones'              => $this->dispatchEvent('recentStickers', $wrapped),
+
+            // ── Forum Topics ───────────────────────────────────────────
+            'updatePinnedForumTopic'            => $this->dispatchEvent('pinnedForumTopic', $wrapped),
+            'updatePinnedForumTopics'           => $this->dispatchEvent('pinnedForumTopics', $wrapped),
+
+            // ── Peers ──────────────────────────────────────────────────
+            'updatePeerSettings'                => $this->dispatchEvent('peerSettings', $wrapped),
+            'updatePeerLocated'                 => $this->dispatchEvent('peerLocated', $wrapped),
+            'updatePeerBlocked'                 => $this->dispatchEvent('peerBlocked', $wrapped),
+            'updatePeerHistoryTTL'              => $this->dispatchEvent('peerHistoryTTL', $wrapped),
+            'updatePeerWallpaper'               => $this->dispatchEvent('peerWallpaper', $wrapped),
+            'updateContactsReset'               => $this->dispatchEvent('contactsReset', $wrapped),
+            'updatePendingJoinRequests'         => $this->dispatchEvent('pendingJoinRequests', $wrapped),
+
+            // ── Auth & Security ────────────────────────────────────────
+            'updateNewAuthorization'            => $this->dispatchEvent('newAuthorization', $wrapped),
+            'updateLoginToken',
+            'updateSentPhoneCode'               => $this->dispatchEvent('loginToken', $wrapped),
+
+            // ── Stars & Payments ───────────────────────────────────────
+            'updateStarsBalance'                => $this->dispatchEvent('starsBalance', $wrapped),
+            'updateStarsRevenueStatus'          => $this->dispatchEvent('starsRevenue', $wrapped),
+            'updatePaidReactionPrivacy'         => $this->dispatchEvent('paidReactionPrivacy', $wrapped),
+
+            // ── Quick Replies ──────────────────────────────────────────
+            'updateQuickReplies'                => $this->dispatchEvent('quickReplies', $wrapped),
+            'updateNewQuickReply'               => $this->dispatchEvent('newQuickReply', $wrapped),
+            'updateDeleteQuickReply'            => $this->dispatchEvent('deleteQuickReply', $wrapped),
+            'updateQuickReplyMessage'           => $this->dispatchEvent('quickReplyMessage', $wrapped),
+            'updateDeleteQuickReplyMessages'    => $this->dispatchEvent('deleteQuickReplyMessages', $wrapped),
+
+            // ── Config & System ────────────────────────────────────────
+            'updateConfig'                      => $this->dispatchEvent('config', $wrapped),
+            'updateDcOptions'                   => $this->dispatchEvent('dcOptions', $wrapped),
+            'updatePtsChanged'                  => $this->dispatchEvent('ptsChanged', $wrapped),
+            'updateLangPack'                    => $this->dispatchEvent('langPack', $wrapped),
+            'updateLangPackTooLong'             => $this->dispatchEvent('langPackTooLong', $wrapped),
+            'updateAutoSaveSettings'            => $this->dispatchEvent('autoSaveSettings', $wrapped),
+
+            // ── Themes ─────────────────────────────────────────────────
+            'updateTheme'                       => $this->dispatchEvent('theme', $wrapped),
 
             default => null,
         };

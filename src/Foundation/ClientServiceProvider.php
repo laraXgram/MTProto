@@ -68,6 +68,8 @@ class ClientServiceProvider extends ServiceProvider
         $this->app->singleton('client.listener', function ($app) {
             return new ClientListener($app['events'], $app);
         });
+
+        $this->app->alias('client.listener', ClientListener::class);
     }
 
     protected function registerClientKernel(): void

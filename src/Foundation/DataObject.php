@@ -111,6 +111,17 @@ class DataObject implements \JsonSerializable, \ArrayAccess
     }
 
     /**
+     * Get the data as a JSON string.
+     *
+     * Uses JSON_INVALID_UTF8_SUBSTITUTE by default to safely handle
+     * binary data (file references, thumbnails) in MTProto updates.
+     */
+    public function toJson(int $options = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES): string
+    {
+        return json_encode($this->data, $options | JSON_INVALID_UTF8_SUBSTITUTE) ?: '{}';
+    }
+
+    /**
      * JSON serializable.
      */
     public function jsonSerialize(): array
@@ -156,7 +167,7 @@ class DataObject implements \JsonSerializable, \ArrayAccess
 
     public function __toString(): string
     {
-        return json_encode($this->data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        return json_encode($this->data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE) ?: '{}';
     }
 
     public function __debugInfo(): array

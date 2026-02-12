@@ -7,6 +7,7 @@ namespace LaraGram\MTProto\Foundation;
 use LaraGram\Contracts\Debug\ExceptionHandler;
 use LaraGram\Foundation\Application;
 use LaraGram\Foundation\Events\Terminating;
+use LaraGram\Listening\Exceptions\ListenNotFoundException;
 use LaraGram\Listening\Pipeline;
 use LaraGram\MTProto\Listening\ClientListener;
 use LaraGram\Request\Response;
@@ -52,7 +53,7 @@ class ClientKernel
      */
     protected array $middlewareGroups = [
         'client' => [
-            \LaraGram\Listening\Middleware\SubstituteBindings::class,
+            \LaraGram\MTProto\Listening\Middleware\ClientSubstituteBindings::class,
         ],
     ];
 
@@ -76,11 +77,16 @@ class ClientKernel
 
     /**
      * Handle an incoming MTProto update.
+     *
+     * @throws ListenNotFoundException when no handler is registered for this update type
      */
     public function handle(ClientRequest $request): Response
     {
         try {
             $response = $this->sendRequestThroughListener($request);
+        } catch (ListenNotFoundException $e) {
+            // Let this propagate — caller decides whether to ignore it
+            throw $e;
         } catch (Throwable $e) {
             $this->reportException($e);
             $response = new Response($e->getLine() . ':' . $e->getMessage());
@@ -185,6 +191,17 @@ class ClientKernel
 
     protected function reportException(Throwable $e): void
     {
-        $this->app[ExceptionHandler::class]->report($e);
+        try {
+            $this->app[ExceptionHandler::class]->report($e);
+        } catch (Throwable) {
+            // ExceptionHandler not bound — try Log facade
+            try {
+                \LaraGram\Support\Facades\Log::error("[ClientKernel] {$e->getMessage()}", [
+                    'exception' => $e,
+                ]);
+            } catch (Throwable) {
+                error_log("[ClientKernel] Exception: {$e->getMessage()} in {$e->getFile()}:{$e->getLine()}");
+            }
+        }
     }
 }

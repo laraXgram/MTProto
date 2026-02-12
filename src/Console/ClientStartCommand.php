@@ -8,7 +8,9 @@ use LaraGram\Console\Command;
 use LaraGram\MTProto\Foundation\ClientKernel;
 use LaraGram\MTProto\Foundation\ClientManager;
 use LaraGram\MTProto\Foundation\ClientRequest;
+use LaraGram\MTProto\Foundation\ClientType;
 use LaraGram\MTProto\TL\TLObject;
+use LaraGram\Listening\Exceptions\ListenNotFoundException;
 
 /**
  * Start the MTProto client update listener.
@@ -144,8 +146,10 @@ class ClientStartCommand extends Command
     protected function dispatchUpdate(ClientKernel $kernel, TLObject $update, string $type, string $session): void
     {
         try {
+            $updateData = $update->toArray();
+
             $request = ClientRequest::fromUpdate(
-                $update->toArray(),
+                $updateData,
                 $type,
                 $session
             );
@@ -155,12 +159,50 @@ class ClientStartCommand extends Command
             $manager = $this->laragram['mtproto.manager'];
             $request->setClient($manager->client($session));
 
-            $response = $kernel->handle($request);
+            try {
+                $response = $kernel->handle($request);
+                $kernel->terminate($request, $response);
+            } catch (ListenNotFoundException) {
+                // No handler registered for this verb — that's fine, skip silently
+            }
 
-            $kernel->terminate($request, $response);
+            // ── Media-filtered dispatch ────────────────────────────────
+            // If this is a new/edited message with media, also dispatch
+            // with the media-specific verb (PHOTO, VIDEO, STICKER, etc.)
+            // so that onPhoto(), onSticker(), etc. handlers can fire.
+            if ($type === 'updateNewMessage' || $type === 'updateNewChannelMessage'
+                || $type === 'updateEditMessage' || $type === 'updateEditChannelMessage'
+            ) {
+                $message = $updateData['message'] ?? $updateData;
+                if (is_array($message) && isset($message['media'])) {
+                    $mediaVerb = ClientType::mediaTypeFromMessage($message);
+                    if ($mediaVerb !== null) {
+                        $mediaRequest = ClientRequest::fromUpdate(
+                            $updateData,
+                            $type,
+                            $session
+                        );
+                        $mediaRequest->setClient($manager->client($session));
+                        $mediaRequest->setMediaVerb(strtoupper($mediaVerb));
+
+                        try {
+                            $response = $kernel->handle($mediaRequest);
+                            $kernel->terminate($mediaRequest, $response);
+                        } catch (ListenNotFoundException) {
+                            // No handler for this media type — that's fine
+                        }
+                    }
+                }
+            }
         } catch (\Throwable $e) {
             // Log but don't crash the loop
-            error_log("[client:{$session}] Error dispatching {$type}: {$e->getMessage()}");
+            try {
+                \LaraGram\Support\Facades\Log::error("[client:{$session}] Error dispatching {$type}: {$e->getMessage()}", [
+                    'exception' => $e,
+                ]);
+            } catch (\Throwable) {
+                error_log("[client:{$session}] Error dispatching {$type}: {$e->getMessage()}");
+            }
         }
     }
 
