@@ -23,10 +23,8 @@
         "ext-zlib": "*"
     },
     "suggest": {
-        "ext-swoole": "For better performance and features. (SwooleDriver)",
-        "ext-openswoole": "For better performance and features. (SwooleDriver)",
-        "ext-pcntl": "For better performance and features. (ForkDriver)",
-        "revolt/event-loop": "For better performance and features. (AMPHPDriver)",
+        "ext-swoole": "For non-blocking coroutine I/O. (SwooleDriver / Surge)",
+        "ext-openswoole": "For non-blocking coroutine I/O. (SwooleDriver / Surge)",
         "openswoole/core": "Openswoole IDE Helper for better development experience.",
         "swoole/ide-helper": "Swoole IDE Helper for better development experience."
     },

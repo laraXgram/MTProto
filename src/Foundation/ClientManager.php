@@ -8,9 +8,6 @@ use LaraGram\Contracts\Foundation\Application;
 use LaraGram\MTProto\Auth\Authorization;
 use LaraGram\MTProto\Contracts\EventLoopInterface;
 use LaraGram\MTProto\Core\Client as MTProtoClient;
-use LaraGram\MTProto\Driver\Amphp\AmphpEventLoop;
-use LaraGram\MTProto\Driver\Fiber\FiberEventLoop;
-use LaraGram\MTProto\Driver\Fork\ForkEventLoop;
 use LaraGram\MTProto\Driver\Swoole\SwooleEventLoop;
 use LaraGram\MTProto\Driver\Sync\SyncEventLoop;
 use LaraGram\MTProto\Updates\UpdatesHandler;
@@ -251,11 +248,8 @@ class ClientManager
     protected function resolveEventLoop(string $driver): EventLoopInterface
     {
         return match ($driver) {
-            'amphp', 'amp' => new AmphpEventLoop(),
-            'swoole'       => new SwooleEventLoop(),
-            'fork'         => new ForkEventLoop(),
-            'fiber'        => new FiberEventLoop(),
-            default        => new SyncEventLoop(),
+            'swoole' => new SwooleEventLoop(),
+            default  => new SyncEventLoop(),
         };
     }
 

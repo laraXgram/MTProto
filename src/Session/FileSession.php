@@ -277,21 +277,6 @@ class FileSession implements SessionInterface
     /**
      * {@inheritdoc}
      */
-    public function nextSeqNo(bool $contentRelated): int
-    {
-        $seqNo = $this->seqNoCounter * 2;
-        
-        if ($contentRelated) {
-            $seqNo++;
-            $this->seqNoCounter++;
-        }
-        
-        return $seqNo;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
     public function getDcId(): int
     {
         return $this->dcId;

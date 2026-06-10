@@ -33,11 +33,6 @@ class SyncConnection implements ConnectionInterface, DriverInterface
     private ?int $remotePort = null;
 
     /**
-     * Read buffer (unused but kept for future use).
-     */
-    private string $buffer = '';
-
-    /**
      * {@inheritdoc}
      */
     public function getName(): string
@@ -138,7 +133,6 @@ class SyncConnection implements ConnectionInterface, DriverInterface
         $this->socket = $socket;
         $this->remoteAddress = $address;
         $this->remotePort = $port;
-        $this->buffer = '';
 
         return true;
     }
@@ -156,7 +150,6 @@ class SyncConnection implements ConnectionInterface, DriverInterface
 
         $this->remoteAddress = null;
         $this->remotePort = null;
-        $this->buffer = '';
     }
 
     /**

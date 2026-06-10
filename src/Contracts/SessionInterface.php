@@ -95,14 +95,6 @@ interface SessionInterface
     public function getSeqNo(bool $contentRelated = true): int;
 
     /**
-     * Increment and get sequence number.
-     *
-     * @param bool $contentRelated Is this a content-related message?
-     * @return int Message sequence number
-     */
-    public function nextSeqNo(bool $contentRelated): int;
-
-    /**
      * Generate a unique message ID.
      *
      * @return int Message ID based on server time

@@ -52,9 +52,9 @@ class AuthKeyGenerator
     private int $maxRetries = 5;
 
     /**
-     * Message ID counter.
+     * Last generated message ID (for monotonic uniqueness).
      */
-    private int $msgIdCounter = 0;
+    private int $lastMsgId = 0;
 
     /**
      * Create a new auth key generator.
@@ -124,12 +124,14 @@ class AuthKeyGenerator
      */
     private function generateMsgId(): int
     {
-        $time = microtime(true);
-        $msgId = (int) ($time * (1 << 32));
-        $msgId = (($msgId >> 2) << 2) + $this->msgIdCounter;
-        $this->msgIdCounter = ($this->msgIdCounter + 4) % 4;
-        
-        return $msgId;
+        $msgId = (int) (microtime(true) * (1 << 32));
+        $msgId = ($msgId >> 2) << 2;
+
+        if ($msgId <= $this->lastMsgId) {
+            $msgId = $this->lastMsgId + 4;
+        }
+
+        return $this->lastMsgId = $msgId;
     }
 
     /**
@@ -194,13 +196,10 @@ class AuthKeyGenerator
         }
         
         // Step 3: Find a matching RSA public key
-        // Debug: Print what server sent
-        $serverFpStrings = $serverPublicKeyFingerprints;
-        
         $publicKey = $this->findPublicKey($serverPublicKeyFingerprints);
         if ($publicKey === null) {
             throw new MTProtoException(
-                'No matching RSA public key found. Server sent fingerprints: ' . implode(', ', $serverFpStrings)
+                'No matching RSA public key found. Server sent fingerprints: ' . implode(', ', $serverPublicKeyFingerprints)
             );
         }
         
@@ -334,8 +333,7 @@ class AuthKeyGenerator
             STR_PAD_LEFT
         );
         
-        // Verify auth_key_aux_hash
-        $authKeyAuxHash = substr($this->crypto->sha1($authKeyBytes), 0, 8);
+        // Verify new_nonce_hash
         $newNonceHash = $this->calculateNewNonceHash($newNonce, $authKeyBytes, $dhGenResult['type']);
         
         if ($dhGenResult['new_nonce_hash'] !== $newNonceHash) {
@@ -564,8 +562,7 @@ class AuthKeyGenerator
         $offset += $pqLen;
         $offset += (4 - (($pqLen + ($pqLen < 254 ? 1 : 4)) % 4)) % 4; // Padding
         
-        // Vector of fingerprints
-        $vectorConstructor = unpack('V', substr($data, $offset, 4))[1];
+        // Vector of fingerprints — skip vector constructor ID
         $offset += 4;
         $count = unpack('V', substr($data, $offset, 4))[1];
         $offset += 4;
@@ -661,7 +658,7 @@ class AuthKeyGenerator
         $offset += 16;
         
         // TL string for encrypted_answer
-        [$encryptedAnswer, $newOffset] = $this->deserializeTLString($data, $offset);
+        [$encryptedAnswer] = $this->deserializeTLString($data, $offset);
         
         return [
             'nonce' => $nonce,

@@ -29,8 +29,9 @@ return [
     | Connection Driver
     |--------------------------------------------------------------------------
     |
-    | Supported: "sync", "amp", 'fiber', 'swoole', 'fork'
-    | Default is sync (blocking).
+    | Supported: "sync", "swoole"
+    | Default is sync (blocking). Use "swoole" for non-blocking I/O
+    | (coroutine-based, required when running under Surge).
     |
     */
     'driver' => env('CLIENT_LOOP_DRIVER', 'sync'),
