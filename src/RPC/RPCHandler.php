@@ -44,7 +44,18 @@ final class RPCHandler
     /** @var array<int> Message IDs to acknowledge */
     private array $pendingAcks = [];
 
-    /** @var int Current layer */
+    /**
+     * Sliding window of server msg_ids already seen, used to drop replays.
+     * Keys are msg_ids; the array is trimmed once it exceeds the cap.
+     *
+     * @var array<int, true>
+     */
+    private array $seenMsgIds = [];
+
+    /** @var int Maximum number of server msg_ids retained for replay detection */
+    private const SEEN_MSG_ID_LIMIT = 1024;
+
+    /** @var int Current layer (overridden by Client::LAYER; must match parsed schema/types) */
     private int $layer = 214;
 
     /** @var bool Whether connection has been initialized */
@@ -410,8 +421,15 @@ final class RPCHandler
     {
         // Check if unencrypted (auth_key_id = 0)
         $authKeyId = substr($data, 0, 8);
-        
+
         if ($authKeyId === str_repeat("\x00", 8)) {
+            // Only the auth-key handshake may use unencrypted frames. Once an
+            // auth key exists, accepting plaintext frames opens a downgrade/
+            // injection vector, so reject them.
+            if ($this->session->getAuthKey() !== null) {
+                throw new SecurityException('Unencrypted message received after handshake');
+            }
+
             return $this->processUnencrypted($data);
         }
 
@@ -471,6 +489,19 @@ final class RPCHandler
         $msgId = unpack('P', substr($decrypted, 16, 8))[1];
         $seqNo = unpack('V', substr($decrypted, 24, 4))[1];
         $length = unpack('V', substr($decrypted, 28, 4))[1];
+
+        // Validate the inner length field before trusting it. The plaintext is
+        // header(32) + message_data + padding(12..1024); a forged length could
+        // otherwise drive an OOB read or padding-oracle-style probing.
+        $decryptedLen = strlen($decrypted);
+        if ($length < 0 || $length > $decryptedLen - 32) {
+            throw new SecurityException('Invalid inner message length');
+        }
+        $padding = $decryptedLen - 32 - $length;
+        if ($padding < 12 || $padding > 1024) {
+            throw new SecurityException('Invalid padding length');
+        }
+
         $messageData = substr($decrypted, 32, $length);
 
         // Verify session — if session was regenerated, old replies may arrive
@@ -479,11 +510,65 @@ final class RPCHandler
             return ['_' => 'stale_session'];
         }
 
+        // Validate the server msg_id: must be odd (server messages are 1 or 3
+        // mod 4), within the allowed time window, and not a replay. Per spec a
+        // failing frame is *dropped* (not fatal) — throwing here would abort the
+        // RPC currently waiting in receiveResponse(), so we return a benign
+        // marker and let the read loop continue to the real response.
+        $reason = $this->checkServerMsgId($msgId);
+        if ($reason !== null) {
+            error_log("[MTProto] Dropping server message {$msgId}: {$reason}");
+            return ['_' => 'dropped_message'];
+        }
+
         // Add to pending acks
         $this->pendingAcks[] = $msgId;
 
         // Parse and handle the message
         return $this->handleMessage($msgId, $messageData);
+    }
+
+    /**
+     * Check an incoming server msg_id and record it for replay detection.
+     *
+     * Server message identifiers are odd (1 or 3 mod 4). The high 32 bits are a
+     * unix timestamp; messages too far from the (delta-adjusted) local clock are
+     * rejected, and duplicates are dropped via a sliding window.
+     *
+     * @return string|null  null if the message is acceptable, otherwise a short
+     *                       reason the caller should log before dropping it.
+     */
+    private function checkServerMsgId(int $msgId): ?string
+    {
+        // Server msg_ids must be odd; even ids only originate from the client.
+        if (($msgId & 1) === 0) {
+            return 'msg_id is not odd';
+        }
+
+        // High 32 bits encode the server's unix time (msg_id = time << 32 + ...).
+        $msgTime = ($msgId >> 32) & 0xFFFFFFFF;
+        $now = time() + $this->session->getTimeDelta();
+
+        // Per spec: reject ids more than 30s in the future or 300s in the past.
+        if ($msgTime > $now + 30 || $msgTime < $now - 300) {
+            return 'timestamp out of window (drift ' . ($msgTime - $now) . 's)';
+        }
+
+        // Replay protection: a msg_id already processed is a duplicate.
+        if (isset($this->seenMsgIds[$msgId])) {
+            return 'duplicate msg_id (replay)';
+        }
+
+        $this->seenMsgIds[$msgId] = true;
+
+        // Trim the window. Keys are monotonically increasing msg_ids, so drop
+        // the oldest (smallest) ones once over the cap.
+        if (count($this->seenMsgIds) > self::SEEN_MSG_ID_LIMIT) {
+            ksort($this->seenMsgIds);
+            $this->seenMsgIds = array_slice($this->seenMsgIds, -self::SEEN_MSG_ID_LIMIT, null, true);
+        }
+
+        return null;
     }
 
     /**
@@ -538,9 +623,32 @@ final class RPCHandler
     {
         // Skip constructor ID (4 bytes), then read TL bytes (packed_data)
         $packedData = $this->readTLBytes($data, 4);
-        $unpacked = gzdecode($packedData);
-        
+        $unpacked = $this->gzdecodeChecked($packedData);
+
         return $this->handleMessage($msgId, $unpacked);
+    }
+
+    /** @var int Max allowed size of gzip-decompressed payloads (16 MiB) to guard against zip bombs */
+    private const MAX_GZIP_OUTPUT = 16 * 1024 * 1024;
+
+    /**
+     * Decompress a gzip_packed payload, guarding against corrupt data and
+     * decompression bombs. gzdecode() returns false on bad input, which would
+     * otherwise reach handleMessage() and trigger a type error.
+     */
+    private function gzdecodeChecked(string $packedData): string
+    {
+        $unpacked = @gzdecode($packedData, self::MAX_GZIP_OUTPUT);
+
+        if ($unpacked === false) {
+            throw new MTProtoException('Failed to gzip-decode packed message');
+        }
+
+        if (strlen($unpacked) >= self::MAX_GZIP_OUTPUT) {
+            throw new SecurityException('Decompressed payload exceeds maximum allowed size');
+        }
+
+        return $unpacked;
     }
 
     /**
@@ -647,7 +755,7 @@ final class RPCHandler
         // Check for gzip
         if ($constructorId === self::GZIP_PACKED) {
             $packedData = $this->readTLBytes($resultData, 4);
-            $resultData = gzdecode($packedData);
+            $resultData = $this->gzdecodeChecked($packedData);
             $constructorId = unpack('V', substr($resultData, 0, 4))[1];
         }
 

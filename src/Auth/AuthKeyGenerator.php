@@ -474,30 +474,92 @@ class AuthKeyGenerator
     }
 
     /**
+     * Cache of dh_prime hashes that already passed the full primality check.
+     * The prime never changes in practice, so the expensive Miller-Rabin pass
+     * runs once per process (Madeline approach).
+     *
+     * @var array<string, true>
+     */
+    private static array $verifiedPrimes = [];
+
+    /**
      * Verify DH parameters.
+     *
+     * Full check per the MTProto spec: dh_prime must be a 2048-bit safe prime,
+     * g must be a valid generator for the chosen value, and g_a must sit in the
+     * secure range. Failing to validate dh_prime would let a MITM that broke the
+     * RSA-step assumptions supply a smooth prime and recover the shared secret.
+     *
+     * @see https://core.telegram.org/mtproto/auth_key (step 6)
      */
     private function verifyDhParams(\GMP $dhPrime, \GMP $g, \GMP $gA): void
     {
-        // Check that dh_prime is a safe prime
-        // For now, we trust Telegram's parameters
-        
-        // Check that 1 < g < dh_prime - 1
-        if (gmp_cmp($g, 1) <= 0 || gmp_cmp($g, gmp_sub($dhPrime, 1)) >= 0) {
-            throw SecurityException::checkFailed('Invalid g parameter');
+        // g must be one of the small, spec-allowed generators.
+        $gInt = gmp_intval($g);
+        if (gmp_cmp($g, 2) < 0 || gmp_cmp($g, 7) > 0) {
+            throw SecurityException::checkFailed('g out of allowed range [2, 7]');
         }
-        
+
+        $this->verifyDhPrime($dhPrime);
+
+        // g-specific quadratic-residue condition: ensures g generates the full
+        // prime-order subgroup so g^x cannot fall into a small subgroup.
+        $valid = match ($gInt) {
+            2 => gmp_intval(gmp_mod($dhPrime, 8)) === 7,
+            3 => gmp_intval(gmp_mod($dhPrime, 3)) === 2,
+            4 => true,
+            5 => in_array(gmp_intval(gmp_mod($dhPrime, 5)), [1, 4], true),
+            6 => in_array(gmp_intval(gmp_mod($dhPrime, 24)), [19, 23], true),
+            7 => in_array(gmp_intval(gmp_mod($dhPrime, 7)), [3, 5, 6], true),
+            default => false,
+        };
+        if (!$valid) {
+            throw SecurityException::checkFailed("g={$gInt} is not a valid generator for dh_prime");
+        }
+
         // Check that 1 < g_a < dh_prime - 1
         if (gmp_cmp($gA, 1) <= 0 || gmp_cmp($gA, gmp_sub($dhPrime, 1)) >= 0) {
             throw SecurityException::checkFailed('Invalid g_a parameter');
         }
-        
+
         // Check that 2^{2048-64} < g_a < dh_prime - 2^{2048-64}
         $lowerBound = gmp_pow(2, 2048 - 64);
         $upperBound = gmp_sub($dhPrime, $lowerBound);
-        
+
         if (gmp_cmp($gA, $lowerBound) <= 0 || gmp_cmp($gA, $upperBound) >= 0) {
             throw SecurityException::checkFailed('g_a out of secure range');
         }
+    }
+
+    /**
+     * Verify dh_prime is a 2048-bit safe prime, caching the result.
+     */
+    private function verifyDhPrime(\GMP $dhPrime): void
+    {
+        // dh_prime must be exactly 2048 bits: 2^2047 <= p < 2^2048.
+        $bits = strlen(gmp_strval($dhPrime, 2));
+        if ($bits !== 2048) {
+            throw SecurityException::checkFailed("dh_prime is not 2048-bit (got {$bits} bits)");
+        }
+
+        $cacheKey = hash('sha256', gmp_export($dhPrime, 1, GMP_MSW_FIRST | GMP_BIG_ENDIAN));
+        if (isset(self::$verifiedPrimes[$cacheKey])) {
+            return;
+        }
+
+        // dh_prime must be prime, and (dh_prime - 1) / 2 must also be prime
+        // (safe prime). gmp_prob_prime: 0 = composite, 1 = probably prime,
+        // 2 = definitely prime. 25 Miller-Rabin rounds is the Madeline default.
+        if (gmp_prob_prime($dhPrime, 25) === 0) {
+            throw SecurityException::checkFailed('dh_prime is not prime');
+        }
+
+        $halfPrime = gmp_div_q(gmp_sub($dhPrime, 1), 2);
+        if (gmp_prob_prime($halfPrime, 25) === 0) {
+            throw SecurityException::checkFailed('(dh_prime - 1) / 2 is not prime');
+        }
+
+        self::$verifiedPrimes[$cacheKey] = true;
     }
 
     /**

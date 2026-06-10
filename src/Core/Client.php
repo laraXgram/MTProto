@@ -400,6 +400,9 @@ class Client
             $this->apiHash,
         );
 
+        // Keep the RPC layer in sync with the compiled schema / Client::LAYER.
+        $this->rpc->setLayer(self::LAYER);
+
         $this->rpc->initializeConnection();
 
         return $this->rpc;

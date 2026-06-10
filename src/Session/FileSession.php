@@ -156,8 +156,26 @@ class FileSession implements SessionInterface
         ];
 
         $content = json_encode($data, JSON_PRETTY_PRINT);
-        
-        return file_put_contents($this->filePath, $content, LOCK_EX) !== false;
+
+        // The session file holds the auth key — secret material. Write to a temp
+        // file then atomically rename so a crash can't leave a torn file, and
+        // restrict perms to the owner (default umask would leave it 0644).
+        $tmpPath = $this->filePath . '.tmp.' . bin2hex(random_bytes(4));
+
+        if (file_put_contents($tmpPath, $content, LOCK_EX) === false) {
+            return false;
+        }
+
+        @chmod($tmpPath, 0600);
+
+        if (!rename($tmpPath, $this->filePath)) {
+            @unlink($tmpPath);
+            return false;
+        }
+
+        @chmod($this->filePath, 0600);
+
+        return true;
     }
 
     /**
