@@ -12,6 +12,7 @@ use LaraGram\Support\Facades\Facade;
  * === Messages ===
  * @method static \LaraGram\Listening\Listen onMessage(\Closure|array|string $action) Listen for all new messages
  * @method static \LaraGram\Listening\Listen onText(string $pattern, \Closure|array|string $action) Listen for messages matching a text pattern
+ * @method static \LaraGram\Listening\Listen onCommand(string|array $command, \Closure|array|string $action) Listen for a slash command (optional $args captured)
  * @method static \LaraGram\Listening\Listen onEditedMessage(\Closure|array|string $action) Listen for edited messages
  * @method static \LaraGram\Listening\Listen onDeletedMessages(\Closure|array|string $action) Listen for deleted messages
  * @method static \LaraGram\Listening\Listen onPinnedMessages(\Closure|array|string $action) Listen for pinned message events

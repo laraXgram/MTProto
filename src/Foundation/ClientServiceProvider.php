@@ -9,6 +9,8 @@ use LaraGram\MTProto\Auth\Authorization;
 use LaraGram\MTProto\Contracts\EventLoopInterface;
 use LaraGram\MTProto\Driver\Sync\SyncEventLoop;
 use LaraGram\MTProto\Listening\ClientListener;
+use LaraGram\MTProto\Runtime\Contracts\Runtime;
+use LaraGram\MTProto\Runtime\SwooleRuntime;
 use LaraGram\MTProto\Updates\UpdatesHandler;
 use LaraGram\Support\ServiceProvider;
 
@@ -23,6 +25,8 @@ class ClientServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfig();
+        $this->registerLogger();
+        $this->registerRuntime();
         $this->registerClientListener();
         $this->registerClientKernel();
         $this->registerClientManager();
@@ -76,6 +80,30 @@ class ClientServiceProvider extends ServiceProvider
     {
         $this->app->singleton(ClientKernel::class, function ($app) {
             return new ClientKernel($app, $app['client.listener']);
+        });
+    }
+
+    protected function registerLogger(): void
+    {
+        $this->app->singleton('mtproto.logger', function ($app) {
+            $channel = $app['config']['mtproto.log_channel'] ?? null;
+
+            return $app['log']->channel($channel);
+        });
+    }
+
+    /**
+     * Bind the coroutine {@see Runtime} (RULE 1). The Swoole hooks are only
+     * enabled when the driver is actually 'swoole', so the sync path keeps
+     * native blocking semantics. A future RoadRunner/FrankenPHP backend = bind a
+     * different Runtime here; nothing in Core changes.
+     */
+    protected function registerRuntime(): void
+    {
+        $this->app->singleton(Runtime::class, function ($app) {
+            $driver = $app['config']['mtproto.driver'] ?? 'sync';
+
+            return new SwooleRuntime(enableHooks: $driver === 'swoole');
         });
     }
 

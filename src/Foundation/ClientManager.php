@@ -67,11 +67,25 @@ class ClientManager
         $eventLoop = $this->resolveEventLoop($config['driver'] ?? 'sync');
 
         $options = [
-            'dc_id'       => (int) ($config['dc_id'] ?? 2),
-            'test_mode'   => (bool) ($config['test_mode'] ?? false),
-            'timeout'     => (float) ($config['connection']['timeout'] ?? 10),
-            'session_dir' => $this->resolveSessionPath($config),
-            'event_loop'  => $eventLoop,
+            'dc_id'             => (int) ($config['dc_id'] ?? 2),
+            'test_mode'         => (bool) ($config['test_mode'] ?? false),
+            'timeout'           => (float) ($config['connection']['timeout'] ?? 10),
+            'session_dir'       => $this->resolveSessionPath($config),
+            'event_loop'        => $eventLoop,
+            'layer'             => (int) ($config['layer'] ?? MTProtoClient::LAYER),
+            'flood_sleep'       => (bool) ($config['flood_sleep'] ?? true),
+            'flood_sleep_limit' => (int) ($config['flood_sleep_limit'] ?? 60),
+            'max_retries'       => (int) ($config['connection']['retry_count'] ?? 5),
+            'use_pump'          => (bool) ($config['use_pump'] ?? false),
+            'device'            => \LaraGram\MTProto\Core\DeviceProfile::resolve((array) ($config['device'] ?? [])),
+            'rate_limiter'      => new \LaraGram\MTProto\Core\TokenBucketRateLimiter(
+                (float) (($config['rate_limit']['global']['rate'] ?? 30)),
+                (float) (($config['rate_limit']['global']['capacity'] ?? 30)),
+            ),
+            'rate_limits'       => (array) ($config['rate_limit'] ?? []),
+            'logger'            => $this->app['mtproto.logger'] ?? null,
+            'files'             => $this->app['files'] ?? null,
+            'runtime'           => $this->app->make(\LaraGram\MTProto\Runtime\Contracts\Runtime::class),
         ];
 
         $client = new MTProtoClient($apiId, $apiHash, $options);

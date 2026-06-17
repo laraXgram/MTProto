@@ -40,6 +40,27 @@ trait ClientHandlerTrait
     }
 
     /**
+     * Listen for a slash-command message (`/start`, `/help foo`, …).
+     *
+     * Optional arguments after the command are captured into an `$args`
+     * parameter. Pass an array to bind several aliases to one handler.
+     *
+     * @param  string|array  $command  Command name(s), with or without the leading "/".
+     */
+    public function onCommand(string|array $command, Closure|array|string $action)
+    {
+        $listen = null;
+
+        foreach ((array) $command as $cmd) {
+            $cmd = ltrim((string) $cmd, '/');
+            $listen = $this->addListen('NEW_MESSAGE', '/' . $cmd . ' {args?}', $action)
+                ->where('args', '.*');
+        }
+
+        return $listen;
+    }
+
+    /**
      * Listen for edited messages.
      */
     public function onEditedMessage(Closure|array|string $action)
@@ -218,7 +239,7 @@ trait ClientHandlerTrait
     /**
      * Listen for callback queries matching a data pattern.
      */
-    public function onCallbackQueryData(string $pattern, Closure|array|string $action)
+    public function onCallbackQueryData(array|string $pattern, Closure|array|string $action)
     {
         return $this->addListen('CALLBACK_QUERY', $pattern, $action);
     }
@@ -531,7 +552,11 @@ trait ClientHandlerTrait
      */
     public function onUpdate(Closure|array|string $action)
     {
-        return $this->addListen('UPDATE', '{clientUpdatePlaceholder}', $action)
-            ->where('clientUpdatePlaceholder', '.*');
+        // Catch-all: register as a fallback across every MTProto verb so it
+        // fires for any update that no more-specific handler matched, on the
+        // shared engine's fallback tier.
+        return $this->addListen(ClientType::verbs(), '{clientUpdatePlaceholder}', $action)
+            ->where('clientUpdatePlaceholder', '.*')
+            ->fallback();
     }
 }

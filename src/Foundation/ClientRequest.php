@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Foundation;
 
 use Closure;
+use LaraGram\Listening\Contracts\ProvidesListenContext;
 use LaraGram\MTProto\Core\Client;
 use LaraGram\MTProto\Generated\Types;
 use LaraGram\MTProto\TL\TLObject;
@@ -86,11 +87,24 @@ use LaraGram\Support\Traits\Macroable;
  * @property-read int|null $timeout                        Timeout value
  * @property-read int|null $ttl_period                     TTL period
  *
+ * @method mixed uploadFile(string $path, ?string $fileName = null, ?callable $progress = null)
+ * @method mixed uploadBytes(string $contents, string $fileName, ?callable $progress = null)
+ * @method mixed sendPhoto(string|int $peer, string $path, ?string $message = null, array $params = [])
+ * @method mixed sendDocument(string|int $peer, string $path, ?string $message = null, array $params = [])
+ * @method mixed sendVideo(string|int $peer, string $path, ?string $message = null, array $params = [])
+ * @method mixed sendAudio(string|int $peer, string $path, ?string $message = null, array $params = [])
+ * @method mixed sendVoice(string|int $peer, string $path, ?string $message = null, array $params = [])
+ *
  * @mixin \LaraGram\MTProto\Generated\ClientIdeHelper
  */
-class ClientRequest
+class ClientRequest implements ProvidesListenContext
 {
     use Conditionable, Macroable;
+
+    /**
+     * Verbs whose matchable value is the message text (`message.message`).
+     */
+    private const TEXT_VERBS = ['NEW_MESSAGE', 'EDIT_MESSAGE', 'SCHEDULED_MESSAGE'];
 
     /**
      * The raw MTProto update data.
@@ -322,6 +336,49 @@ class ClientRequest
     public function isMethod(string $method): bool
     {
         return $this->method() === $method;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ProvidesListenContext — drives the shared Listening engine
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * {@inheritdoc}
+     *
+     * The verb is the resolved MTProto match verb (native, not Bot-API-remapped).
+     */
+    public function listenVerb(): string
+    {
+        return $this->method();
+    }
+
+    /**
+     * {@inheritdoc}
+     *
+     * Returns the regex-matchable string for the given verb. Structural verbs
+     * (catch-all media/update handlers, etc.) carry no string to match and
+     * return null — the verb match alone is then sufficient.
+     */
+    public function listenValue(string $verb): ?string
+    {
+        if (in_array($verb, self::TEXT_VERBS, true)) {
+            return $this->data['message']['message'] ?? null;
+        }
+
+        return match ($verb) {
+            'CALLBACK_QUERY' => $this->data['data'] ?? null,
+            'INLINE_QUERY' => $this->data['query'] ?? null,
+            'CHOSEN_INLINE_RESULT' => $this->data['query'] ?? null,
+            default => null,
+        };
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function entities(): array
+    {
+        return $this->data['message']['entities'] ?? [];
     }
 
     // ═══════════════════════════════════════════════════════════════════
