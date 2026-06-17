@@ -34,7 +34,19 @@ return [
     | (coroutine-based, required when running under Surge).
     |
     */
-    'driver' => env('CLIENT_LOOP_DRIVER', 'sync'),
+    'driver' => env('CLIENT_LOOP_DRIVER', 'swoole'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Message Pump
+    |--------------------------------------------------------------------------
+    |
+    | Single-reader coroutine core. Routes every RPC and pushed update through
+    | one socket reader so handlers run non-blocking, each in its own coroutine.
+    | Requires the "swoole" driver.
+    |
+    */
+    'use_pump' => env('CLIENT_USE_PUMP', true),
 
     /*
     |--------------------------------------------------------------------------
@@ -91,6 +103,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Proactive Rate Limiting
+    |--------------------------------------------------------------------------
+    |
+    | Pace outgoing calls before they hit Telegram's flood limits (avoids
+    | reactive FLOOD_WAIT and lowers ban risk). Token-bucket per scope:
+    |   global  — overall msgs/sec across the account (rate, capacity=burst)
+    |   per_peer— per chat/user (Telegram allows ~1 msg/sec to a given peer)
+    |
+    | Set 'enabled' => false to disable. Rates are tokens-per-second.
+    |
+    */
+    'rate_limit' => [
+        'enabled'  => env('CLIENT_RATE_LIMIT', true),
+        'global'   => ['rate' => 30.0, 'capacity' => 30.0],
+        'per_peer' => ['rate' => 1.0, 'capacity' => 5.0],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Logging
     |--------------------------------------------------------------------------
     |
@@ -104,23 +135,36 @@ return [
     | API Layer
     |--------------------------------------------------------------------------
     |
-    | Telegram API layer version
+    | Telegram API layer version. MUST match the compiled TL schema + Generated
+    | types (currently 227). Do not raise this without regenerating both the
+    | .tl schema and the Generated/Types together (php bin/compile-tl.php) — the
+    | server would otherwise reply with constructors the deserializer cannot parse.
     |
     */
-    'layer' => 197,
+    'layer' => 227,
 
     /*
     |--------------------------------------------------------------------------
-    | Device Info
+    | Device Fingerprint
     |--------------------------------------------------------------------------
     |
-    | Information sent during connection initialization
+    | The device/system/app strings sent at connection init. Telegram
+    | fingerprints clients by these — a php_uname()-derived value reveals a PHP
+    | server and is a ban risk. Pick a realistic official-client preset instead.
+    |
+    | preset: one of "tdesktop", "android", "ios", "macos", "web".
+    |         Choose the platform that matches the api_id you registered.
+    |         Keep it STABLE — a rotating fingerprint is itself a flag.
+    |
+    | You may override individual fields (device_model, system_version,
+    | app_version, system_lang_code, lang_pack, lang_code) on top of the preset.
     |
     */
     'device' => [
-        'model' => 'LaraGram',
-        'system' => PHP_VERSION,
-        'app_version' => '4.0.0',
-        'lang_code' => 'en',
+        'preset' => env('CLIENT_DEVICE_PRESET', 'tdesktop'),
+        // 'device_model'   => 'My Device',
+        // 'system_version' => 'Windows 10',
+        // 'app_version'    => '5.7.3 x64',
+        // 'lang_code'      => 'en',
     ],
 ];
