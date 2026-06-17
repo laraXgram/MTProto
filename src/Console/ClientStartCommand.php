@@ -10,6 +10,7 @@ use LaraGram\MTProto\Foundation\ClientManager;
 use LaraGram\MTProto\Foundation\ClientRequest;
 use LaraGram\MTProto\Foundation\ClientType;
 use LaraGram\MTProto\TL\TLObject;
+use LaraGram\MTProto\Updates\PumpLoop;
 use LaraGram\Listening\Exceptions\ListenNotFoundException;
 
 /**
@@ -127,15 +128,17 @@ class ClientStartCommand extends Command
         $this->components->info("Client '{$session}' connected and listening for updates...");
         $this->newLine();
 
-        // ── Wire up update handler ─────────────────────────────────────
-        $handler = $manager->handler($session);
-
-        $handler->onUpdate(function (TLObject $update, string $type) use ($kernel, $session) {
+        $onUpdate = function (TLObject $update, string $type) use ($kernel, $session) {
             $this->dispatchUpdate($kernel, $update, $type, $session);
-        });
+        };
 
-        // ── Start the update loop (blocks) ─────────────────────────────
-        $handler->start();
+        if ((bool) ($this->laragram['config']['mtproto.use_pump'] ?? false)) {
+            (new PumpLoop($manager->client($session)))->onUpdate($onUpdate)->run();
+
+            return self::SUCCESS;
+        }
+
+        $manager->handler($session)->onUpdate($onUpdate)->start();
 
         return self::SUCCESS;
     }
