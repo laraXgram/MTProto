@@ -41,10 +41,12 @@ class FileDecoder
     protected const MAX_CHUNK_SIZE = 1048576; // 1024 * 1024
 
     protected Client $client;
+    protected \LaraGram\Filesystem\Filesystem $files;
 
     public function __construct(Client $client)
     {
         $this->client = $client;
+        $this->files  = $client->getFiles();
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -190,11 +192,9 @@ class FileDecoder
      */
     public function downloadToFile(array $location, int $dcId, string $path, int $size = 0): int
     {
-        // Ensure directory exists
-        $dir = dirname($path);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
+        // Ensure directory exists; keep handle-based streaming for the body
+        // (large media — avoids re-opening the file per 1 MB chunk).
+        $this->files->ensureDirectoryExists(dirname($path), 0755);
 
         $handle = fopen($path, 'wb');
         if ($handle === false) {
