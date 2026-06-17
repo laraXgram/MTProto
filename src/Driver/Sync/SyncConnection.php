@@ -143,8 +143,16 @@ class SyncConnection implements ConnectionInterface, DriverInterface
     public function disconnect(): void
     {
         if ($this->socket !== null) {
-            @socket_shutdown($this->socket, 2);
-            @socket_close($this->socket);
+            // Swoole's hooked socket_* throw a TypeError (not a warning, so @ does
+            // not help) when a native \Socket is closed from inside a coroutine.
+            try {
+                socket_shutdown($this->socket, 2);
+            } catch (\Throwable) {
+            }
+            try {
+                socket_close($this->socket);
+            } catch (\Throwable) {
+            }
             $this->socket = null;
         }
 

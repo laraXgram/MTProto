@@ -166,14 +166,15 @@ class SwooleEventLoop implements EventLoopInterface
     {
         $this->running = true;
 
-        // Swoole\Event::wait() must run inside a coroutine container
-        // when using coroutine features. Wrap if not already in one.
+        // Event::wait() drives the reactor (timers + read watchers) and supports
+        // Coroutine::create at top level; it is illegal inside a coroutine
+        // container, so when already in one we just park until stop().
         if (\Swoole\Coroutine::getCid() === -1) {
-            \Swoole\Coroutine\run(function () {
-                \Swoole\Event::wait();
-            });
-        } else {
             \Swoole\Event::wait();
+        } else {
+            while ($this->running) {
+                \Swoole\Coroutine::sleep(0.1);
+            }
         }
 
         $this->running = false;
