@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Core;
 
+use LaraGram\MTProto\Entities\EntityParser;
 use LaraGram\MTProto\TL\TLParser;
 
 /**
@@ -50,10 +51,56 @@ class ParamPreprocessor
         'InputChannel',
     ];
 
+    private ?EntityParser $entityParser = null;
+
     public function __construct(
         private readonly PeerResolver $resolver,
         private readonly TLParser     $parser,
     ) {}
+
+    /**
+     * Convert `parse_mode` ("markdown"|"html") into a `message` + `entities` pair
+     * for any method that carries both fields. Explicit `entities` win; the
+     * non-TL `parse_mode` key is stripped either way.
+     */
+    private function applyParseMode($methodDef, array $params): array
+    {
+        if (!array_key_exists('parse_mode', $params)) {
+            return $params;
+        }
+
+        $mode = $params['parse_mode'];
+        unset($params['parse_mode']);
+
+        $hasEntities = false;
+        $textField   = null;
+        foreach ($methodDef->getParams() as $param) {
+            $n = $param->getName();
+            if ($n === 'entities') {
+                $hasEntities = true;
+            }
+            if ($n === 'message' || $n === 'caption') {
+                $textField = $n;
+            }
+        }
+
+        if (!$hasEntities || $textField === null || !is_string($params[$textField] ?? null)) {
+            return $params;
+        }
+        if (!empty($params['entities'])) {
+            return $params; // caller supplied entities explicitly
+        }
+
+        $this->entityParser ??= new EntityParser();
+        $parsed = $this->entityParser->parse($params[$textField], is_string($mode) ? $mode : null);
+
+        $params[$textField] = $parsed['text'];
+        if ($parsed['entities'] !== []) {
+            $params['entities'] = $parsed['entities'];
+        }
+
+        return $params;
+    }
 
     /**
      * Process method params before serialisation.
@@ -68,6 +115,8 @@ class ParamPreprocessor
         if ($methodDef === null) {
             return $params; // unknown method — pass through
         }
+
+        $params = $this->applyParseMode($methodDef, $params);
 
         foreach ($methodDef->getParams() as $param) {
             $name = $param->getName();
