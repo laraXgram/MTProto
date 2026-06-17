@@ -16,7 +16,29 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../vendor/autoload.php';
+// Load the first available Composer autoloader. When the package is installed as
+// a dependency the framework (LaraGram\Filesystem, needed by TLParser) lives in
+// the app's vendor/, not the package's own — so try both.
+// Require every available autoloader (the package's own vendor/ may lack the
+// framework while the app's provides it) until LaraGram\Filesystem resolves.
+foreach ([
+    getcwd() . '/vendor/autoload.php', // dev: run from app root (handles symlinked package)
+    __DIR__ . '/../../../autoload.php',
+    __DIR__ . '/../../../../vendor/autoload.php',
+    __DIR__ . '/../vendor/autoload.php',
+] as $autoload) {
+    if (is_file($autoload)) {
+        require_once $autoload;
+        if (class_exists(\LaraGram\Filesystem\Filesystem::class)) {
+            break;
+        }
+    }
+}
+
+if (!class_exists(\LaraGram\Filesystem\Filesystem::class)) {
+    fwrite(STDERR, "Framework autoload not found (LaraGram\\Filesystem missing). Run inside an app.\n");
+    exit(1);
+}
 
 use LaraGram\MTProto\TL\TLParser;
 

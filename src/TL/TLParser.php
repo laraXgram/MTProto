@@ -36,17 +36,23 @@ final class TLParser
     /** @var array<string, TLType> Types */
     private array $types = [];
 
+    private \LaraGram\Filesystem\Filesystem $files;
+
+    public function __construct(?\LaraGram\Filesystem\Filesystem $files = null)
+    {
+        $this->files = $files ?? new \LaraGram\Filesystem\Filesystem();
+    }
+
     /**
      * Parse a TL schema file
      */
     public function parseFile(string $filePath): void
     {
-        if (!file_exists($filePath)) {
+        if (!$this->files->exists($filePath)) {
             throw new MTProtoException("TL schema file not found: {$filePath}");
         }
 
-        $content = file_get_contents($filePath);
-        $this->parse($content);
+        $this->parse($this->files->get($filePath));
     }
 
     /**

@@ -8,6 +8,7 @@ use LaraGram\MTProto\Contracts\ConnectionInterface;
 use LaraGram\MTProto\Contracts\TransportInterface;
 use LaraGram\MTProto\Contracts\CryptoInterface;
 use LaraGram\MTProto\Contracts\SessionInterface;
+use LaraGram\Log\LoggerInterface;
 use LaraGram\MTProto\TL\TLParser;
 use LaraGram\MTProto\TL\TLSerializer;
 use LaraGram\MTProto\Exceptions\MTProtoException;
@@ -67,6 +68,14 @@ final class RPCHandler
     /** @var string API Hash */
     private string $apiHash;
 
+    /** @var \LaraGram\MTProto\Core\DeviceProfile|null Device fingerprint sent at init. */
+    private ?\LaraGram\MTProto\Core\DeviceProfile $deviceProfile = null;
+
+    public function setDeviceProfile(\LaraGram\MTProto\Core\DeviceProfile $profile): void
+    {
+        $this->deviceProfile = $profile;
+    }
+
     /**
      * Callback to forward updates received during blocking receiveResponse().
      * Without this, any update arriving while waiting for an RPC response
@@ -76,6 +85,8 @@ final class RPCHandler
      */
     private $updateFeedCallback = null;
 
+    private ?LoggerInterface $logger;
+
     public function __construct(
         private readonly ConnectionInterface $connection,
         private readonly TransportInterface $transport,
@@ -84,10 +95,12 @@ final class RPCHandler
         private readonly TLParser $parser,
         int $apiId = 0,
         string $apiHash = '',
+        ?LoggerInterface $logger = null,
     ) {
         $this->serializer = new TLSerializer($parser);
         $this->apiId = $apiId;
         $this->apiHash = $apiHash;
+        $this->logger = $logger;
     }
 
     /**
@@ -136,18 +149,17 @@ final class RPCHandler
         // Step 2: Send InvokeWithLayer(InitConnection(help.getConfig))
         $getConfig = ['_' => 'help.getConfig'];
 
-        $initConnection = [
+        $device = $this->deviceProfile ??= \LaraGram\MTProto\Core\DeviceProfile::preset(
+            \LaraGram\MTProto\Core\DeviceProfile::DEFAULT_PRESET
+        );
+
+        $initConnection = array_merge([
             '_' => 'initConnection',
             'flags' => 0,
             'api_id' => $this->apiId,
-            'device_model' => php_uname('s') . ' ' . php_uname('r'),
-            'system_version' => php_uname('v'),
-            'app_version' => '1.0.0',
-            'system_lang_code' => 'en',
-            'lang_pack' => '',
-            'lang_code' => 'en',
+        ], $device->toInitConnection(), [
             'query' => $getConfig,
-        ];
+        ]);
 
         $wrapped = [
             '_' => 'invokeWithLayer',
@@ -169,7 +181,7 @@ final class RPCHandler
 
         // Handle retry signals (bad_server_salt, etc.)
         if (isset($result['_retry'])) {
-            error_log("[MTProto] Retrying initializeConnection after salt update");
+            $this->logger?->debug('Retrying initializeConnection after salt update');
             $msgId = $this->sendEncrypted($messageData, true);
             $this->pendingMessages[$msgId] = new PendingMessage(
                 msgId: $msgId,
@@ -237,7 +249,7 @@ final class RPCHandler
 
         // Handle retry signals (bad_server_salt, etc.)
         if (isset($response['_retry']) && $maxRetries > 0) {
-            error_log("[MTProto] Retrying {$method} (retries left: {$maxRetries})");
+            $this->logger?->debug("Retrying {$method} (retries left: {$maxRetries})");
             return $this->callInternal($method, $params, $contentRelated, $maxRetries - 1);
         }
 
@@ -275,7 +287,7 @@ final class RPCHandler
 
         // Handle retry signals (bad_server_salt, etc.)
         if (isset($response['_retry'])) {
-            error_log("[MTProto] Retrying ping after salt update");
+            $this->logger?->debug('Retrying ping after salt update');
             $msgId = $this->sendEncrypted($messageData, false);
             $response = $this->receiveResponse($msgId);
         }
@@ -506,7 +518,7 @@ final class RPCHandler
 
         // Verify session — if session was regenerated, old replies may arrive
         if ($sessionId !== $this->session->getSessionId()) {
-            error_log('[MTProto] Ignoring message with stale session ID');
+            $this->logger?->warning('Ignoring message with stale session ID');
             return ['_' => 'stale_session'];
         }
 
@@ -517,7 +529,7 @@ final class RPCHandler
         // marker and let the read loop continue to the real response.
         $reason = $this->checkServerMsgId($msgId);
         if ($reason !== null) {
-            error_log("[MTProto] Dropping server message {$msgId}: {$reason}");
+            $this->logger?->warning("Dropping server message {$msgId}: {$reason}");
             return ['_' => 'dropped_message'];
         }
 
@@ -603,8 +615,8 @@ final class RPCHandler
             ];
         } catch (\Throwable $e) {
             $constructorId = unpack('V', substr($messageData, 0, 4))[1];
-            error_log(sprintf(
-                '[MTProto] Failed to deserialize message 0x%08x: %s',
+            $this->logger?->error(sprintf(
+                'Failed to deserialize message 0x%08x: %s',
                 $constructorId,
                 $e->getMessage()
             ));
@@ -725,8 +737,8 @@ final class RPCHandler
                 ];
             } catch (\Throwable $e) {
                 // Only catch deserialization/parsing errors gracefully
-                error_log(sprintf(
-                    '[MTProto] Failed to handle container message %d: %s',
+                $this->logger?->error(sprintf(
+                    'Failed to handle container message %d: %s',
                     $msgId,
                     $e->getMessage()
                 ));
@@ -821,7 +833,7 @@ final class RPCHandler
 
         // For incorrect server salt: salt already updated above, allow retry
         if ($errorCode === 48) {
-            error_log("[MTProto] Bad message: {$errorMsg} — salt updated, will retry");
+            $this->logger?->warning("Bad message: {$errorMsg} — salt updated, will retry");
             return [
                 '_' => 'bad_server_salt',
                 'msg_id' => $badMsg['bad_msg_id'] ?? 0,
@@ -833,7 +845,7 @@ final class RPCHandler
 
         // For seqno errors: reset session to fix the counter
         if ($errorCode >= 32 && $errorCode <= 35) {
-            error_log("[MTProto] Bad message: {$errorMsg} — regenerating session");
+            $this->logger?->warning("Bad message: {$errorMsg} — regenerating session");
             $this->session->regenerateSessionId();
             $this->initialized = false;
         }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Session;
 
+use LaraGram\Filesystem\Filesystem;
 use LaraGram\MTProto\Contracts\SessionInterface;
 use LaraGram\MTProto\Crypto\NativeCrypto;
 
@@ -71,15 +72,21 @@ class FileSession implements SessionInterface
     private string $name;
 
     /**
+     * Filesystem component (LaraGram local filesystem).
+     */
+    private Filesystem $files;
+
+    /**
      * Create a new file session instance.
      *
      * @param string $name Session name
      * @param string $directory Directory to store session files
      */
-    public function __construct(string $name = 'default', string $directory = '')
+    public function __construct(string $name = 'default', string $directory = '', ?Filesystem $files = null)
     {
         $this->name = $name;
         $this->directory = $directory ?: sys_get_temp_dir() . '/laragram';
+        $this->files = $files ?? new Filesystem();
         $this->crypto = new NativeCrypto();
         $this->filePath = $this->getFilePath($name);
         
@@ -98,12 +105,13 @@ class FileSession implements SessionInterface
      */
     private function loadFromFile(): bool
     {
-        if (!file_exists($this->filePath)) {
+        if (!$this->files->exists($this->filePath)) {
             return false;
         }
 
-        $content = file_get_contents($this->filePath);
-        if ($content === false) {
+        try {
+            $content = $this->files->get($this->filePath);
+        } catch (\Throwable) {
             return false;
         }
 
@@ -138,13 +146,6 @@ class FileSession implements SessionInterface
      */
     public function save(): bool
     {
-        // Ensure directory exists
-        if (!is_dir($this->directory)) {
-            if (!mkdir($this->directory, 0700, true)) {
-                return false;
-            }
-        }
-
         $data = [
             'auth_key' => $this->authKey ? base64_encode($this->authKey) : null,
             'server_salt' => $this->serverSalt ? base64_encode($this->serverSalt) : null,
@@ -157,23 +158,15 @@ class FileSession implements SessionInterface
 
         $content = json_encode($data, JSON_PRETTY_PRINT);
 
-        // The session file holds the auth key — secret material. Write to a temp
-        // file then atomically rename so a crash can't leave a torn file, and
-        // restrict perms to the owner (default umask would leave it 0644).
-        $tmpPath = $this->filePath . '.tmp.' . bin2hex(random_bytes(4));
-
-        if (file_put_contents($tmpPath, $content, LOCK_EX) === false) {
+        // The session file holds the auth key — secret material. replace() does an
+        // atomic temp-write + rename with the temp file chmod'd to 0600, so a crash
+        // can't leave a torn file and the secret is never world-readable.
+        try {
+            $this->files->ensureDirectoryExists($this->directory, 0700);
+            $this->files->replace($this->filePath, $content, 0600);
+        } catch (\Throwable) {
             return false;
         }
-
-        @chmod($tmpPath, 0600);
-
-        if (!rename($tmpPath, $this->filePath)) {
-            @unlink($tmpPath);
-            return false;
-        }
-
-        @chmod($this->filePath, 0600);
 
         return true;
     }
@@ -183,8 +176,8 @@ class FileSession implements SessionInterface
      */
     public function delete(): bool
     {
-        if (file_exists($this->filePath)) {
-            return unlink($this->filePath);
+        if ($this->files->exists($this->filePath)) {
+            return $this->files->delete($this->filePath);
         }
 
         return true;

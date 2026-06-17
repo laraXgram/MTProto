@@ -39,6 +39,7 @@ class UpdateLoop
     private UpdateFeed        $feed;
     private UpdateState       $state;
     private EventLoopInterface $eventLoop;
+    private ?\LaraGram\Log\LoggerInterface $logger;
 
     /** Ping interval (seconds). Telegram closes idle connections after ~60s. */
     private float $pingInterval = 25.0;
@@ -61,6 +62,7 @@ class UpdateLoop
     public function __construct(Client $client, ?EventLoopInterface $eventLoop = null, array $options = [])
     {
         $this->client = $client;
+        $this->logger = $client->getLogger();
 
         $this->pingInterval = $options['ping_interval'] ?? 25.0;
         $this->saveInterval = $options['save_interval'] ?? 30.0;
@@ -70,6 +72,7 @@ class UpdateLoop
         $this->state = new UpdateState(
             $client->getSessionDir(),
             $client->getSessionName(),
+            $client->getFiles(),
         );
 
         $this->feed = new UpdateFeed($client, $this->state);
@@ -341,7 +344,7 @@ class UpdateLoop
             $this->state->save();
         });
 
-        echo "[UpdateLoop] Listening for updates…\n";
+        $this->logger?->info("Listening for updates…");
 
         // 6. Run the event loop (blocks)
         $this->eventLoop->run();
@@ -417,7 +420,7 @@ class UpdateLoop
                 default               => null, // Other messages during loop — ignore
             };
         } catch (\Throwable $e) {
-            error_log("[UpdateLoop] Socket read error: {$e->getMessage()}");
+            $this->logger?->error("Socket read error: {$e->getMessage()}");
 
             // If connection dropped, try to reconnect
             if (!$connection->isConnected()) {
@@ -463,7 +466,7 @@ class UpdateLoop
         // Verify msg_key
         $expectedMsgKey = $crypto->calculateMsgKey($authKey, $decrypted, false);
         if ($msgKey !== $expectedMsgKey) {
-            error_log('[UpdateLoop] Message key verification failed');
+            $this->logger?->warning('Message key verification failed');
             return null;
         }
 
@@ -475,7 +478,7 @@ class UpdateLoop
         try {
             return $this->deserializeMessage($messageData);
         } catch (\Throwable $e) {
-            error_log("[UpdateLoop] Deserialize error: {$e->getMessage()}");
+            $this->logger?->error("Deserialize error: {$e->getMessage()}");
             return null;
         }
     }
@@ -608,7 +611,7 @@ class UpdateLoop
 
             $rpc->sendEncrypted($msgData, false);
         } catch (\Throwable $e) {
-            error_log("[UpdateLoop] Ping failed: {$e->getMessage()}");
+            $this->logger?->warning("Ping failed: {$e->getMessage()}");
         }
     }
 
@@ -628,7 +631,7 @@ class UpdateLoop
      */
     private function handleDisconnect(): void
     {
-        error_log('[UpdateLoop] Connection lost. Attempting reconnect…');
+        $this->logger?->warning('Connection lost. Attempting reconnect…');
 
         for ($attempt = 1; $attempt <= 5; $attempt++) {
             try {
@@ -643,18 +646,18 @@ class UpdateLoop
                     fn(ConnectionInterface $conn) => $this->onSocketData($conn),
                 );
 
-                echo "[UpdateLoop] Reconnected (attempt {$attempt}).\n";
+                $this->logger?->info("Reconnected (attempt {$attempt}).");
 
                 // Fetch missed updates
                 $this->feed->fetchDifference();
 
                 return;
             } catch (\Throwable $e) {
-                error_log("[UpdateLoop] Reconnect attempt {$attempt} failed: {$e->getMessage()}");
+                $this->logger?->warning("Reconnect attempt {$attempt} failed: {$e->getMessage()}");
             }
         }
 
-        error_log('[UpdateLoop] Failed to reconnect after 5 attempts. Stopping loop.');
+        $this->logger?->error('Failed to reconnect after 5 attempts. Stopping loop.');
         $this->stop();
     }
 

@@ -254,7 +254,7 @@ class PeerResolver
             // contacts.resolvedPeer response has 'users' and 'chats' arrays
             $this->peerDb->cachePeersFromResponse($result);
         } catch (\Throwable $e) {
-            error_log("[PeerResolver] Failed to resolve @{$username}: {$e->getMessage()}");
+            $this->client->getLogger()->warning("Failed to resolve @{$username}: {$e->getMessage()}");
         }
     }
 

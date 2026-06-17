@@ -71,11 +71,12 @@ class PeerDatabase
     //  Construction / Persistence
     // ================================================================
 
-    public function __construct(string $sessionDir, string $sessionName)
+    private \LaraGram\Filesystem\Filesystem $files;
+
+    public function __construct(string $sessionDir, string $sessionName, ?\LaraGram\Filesystem\Filesystem $files = null)
     {
-        if (!is_dir($sessionDir)) {
-            mkdir($sessionDir, 0700, true);
-        }
+        $this->files = $files ?? new \LaraGram\Filesystem\Filesystem();
+        $this->files->ensureDirectoryExists($sessionDir, 0700);
 
         $safe = preg_replace('/[^a-zA-Z0-9_-]/', '_', $sessionName);
         $this->filePath = rtrim($sessionDir, '/') . '/' . $safe . '.peers';
@@ -88,12 +89,13 @@ class PeerDatabase
      */
     public function load(): void
     {
-        if (!file_exists($this->filePath)) {
+        if (!$this->files->exists($this->filePath)) {
             return;
         }
 
-        $json = file_get_contents($this->filePath);
-        if ($json === false) {
+        try {
+            $json = $this->files->get($this->filePath);
+        } catch (\Throwable) {
             return;
         }
 
@@ -127,7 +129,7 @@ class PeerDatabase
         }
 
         $json = json_encode(array_values($this->peers), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-        file_put_contents($this->filePath, $json, LOCK_EX);
+        $this->files->replace($this->filePath, $json);
         $this->dirty = false;
     }
 

@@ -29,8 +29,11 @@ class UpdateState
     /** File path for persistence */
     private string $filePath;
 
-    public function __construct(string $sessionDir, string $sessionName)
+    private \LaraGram\Filesystem\Filesystem $files;
+
+    public function __construct(string $sessionDir, string $sessionName, ?\LaraGram\Filesystem\Filesystem $files = null)
     {
+        $this->files = $files ?? new \LaraGram\Filesystem\Filesystem();
         $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $sessionName);
         $this->filePath = rtrim($sessionDir, '/') . '/' . $safeName . '_updates.json';
         $this->load();
@@ -150,22 +153,19 @@ class UpdateState
             'updated_at'  => time(),
         ];
 
-        $dir = dirname($this->filePath);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0700, true);
-        }
-
-        file_put_contents($this->filePath, json_encode($data, JSON_PRETTY_PRINT), LOCK_EX);
+        $this->files->ensureDirectoryExists(dirname($this->filePath), 0700);
+        $this->files->replace($this->filePath, json_encode($data, JSON_PRETTY_PRINT));
     }
 
     public function load(): void
     {
-        if (!file_exists($this->filePath)) {
+        if (!$this->files->exists($this->filePath)) {
             return;
         }
 
-        $json = file_get_contents($this->filePath);
-        if ($json === false) {
+        try {
+            $json = $this->files->get($this->filePath);
+        } catch (\Throwable) {
             return;
         }
 

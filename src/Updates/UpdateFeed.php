@@ -6,6 +6,7 @@ namespace LaraGram\MTProto\Updates;
 
 use LaraGram\MTProto\Core\Client;
 use LaraGram\MTProto\Contracts\EventLoopInterface;
+use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\Generated\Types\Message;
 use LaraGram\MTProto\Generated\Types\Update;
 use LaraGram\MTProto\TL\TLObject;
@@ -29,6 +30,8 @@ class UpdateFeed
      * so that sleep() or blocking RPC calls don't freeze the loop.
      */
     private ?EventLoopInterface $eventLoop = null;
+
+    private ?Runtime $runtime = null;
 
     /**
      * The single callback that receives every individual update.
@@ -55,10 +58,13 @@ class UpdateFeed
      */
     private array $postponed = [];
 
+    private ?\LaraGram\Log\LoggerInterface $logger;
+
     public function __construct(Client $client, UpdateState $state)
     {
         $this->client = $client;
         $this->state  = $state;
+        $this->logger = $client->getLogger();
     }
 
     /**
@@ -67,6 +73,31 @@ class UpdateFeed
     public function setEventLoop(EventLoopInterface $eventLoop): void
     {
         $this->eventLoop = $eventLoop;
+    }
+
+    public function setRuntime(Runtime $runtime): void
+    {
+        $this->runtime = $runtime;
+    }
+
+    /**
+     * Run a handler in its own coroutine when a runtime is available, so a
+     * blocking sleep()/RPC inside it never freezes the reader; falls back to the
+     * legacy event-loop queue, then to inline execution.
+     */
+    private function runHandler(callable $run): void
+    {
+        if ($this->runtime !== null && $this->runtime->isSupported() && $this->runtime->inCoroutine()) {
+            $this->runtime->spawn($run);
+            return;
+        }
+
+        if ($this->eventLoop !== null) {
+            $this->eventLoop->queueCallback($run);
+            return;
+        }
+
+        $run();
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -654,11 +685,7 @@ class UpdateFeed
                 }
             };
 
-            if ($this->eventLoop !== null) {
-                $this->eventLoop->queueCallback($run);
-            } else {
-                $run();
-            }
+            $this->runHandler($run);
         }
 
         // 2. Specific raw-constructor listeners
@@ -911,11 +938,7 @@ class UpdateFeed
                 }
             };
 
-            if ($this->eventLoop !== null) {
-                $this->eventLoop->queueCallback($run);
-            } else {
-                $run();
-            }
+            $this->runHandler($run);
         }
     }
 
@@ -1028,7 +1051,7 @@ class UpdateFeed
             ]);
         } catch (\Throwable $e) {
             // Channel might not be accessible
-            error_log("[UpdateFeed] Failed to get channel difference for {$channelId}: {$e->getMessage()}");
+            $this->logger?->warning("Failed to get channel difference for {$channelId}: {$e->getMessage()}");
             return;
         }
 

@@ -36,7 +36,8 @@ class ClientSubstituteBindings
 
             // Skip implicit bindings — they rely on Bot API Request object
             // which doesn't exist in MTProto context. ClientRequest parameters
-            // are already resolved by ClientListenParameterBinder.
+            // are already resolved by the shared ListenParameterBinder via the
+            // ProvidesListenContext contract.
         }
 
         return $next($request);
