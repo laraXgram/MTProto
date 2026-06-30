@@ -4,19 +4,6 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Runtime\Contracts;
 
-/**
- * Coroutine runtime abstraction (RULE 1).
- *
- * The MTProto async core (MessagePump) needs primitives the framework does not
- * expose directly: a long-lived spawned coroutine, bounded channels, a write
- * mutex, periodic timers and a yielding sleep. Surge offers concurrent-and-wait
- * (`DispatchesCoroutines::resolve`) and server-bound `tick()`, but nothing for a
- * persistent reader coroutine — so we define a minimal contract here and keep
- * every `\Swoole\*` reference inside its concrete implementation.
- *
- * Swapping to a RoadRunner/FrankenPHP/OpenSwoole backend later = a new Runtime
- * implementation bound in the container; the pump is untouched.
- */
 interface Runtime
 {
     /**
@@ -60,4 +47,9 @@ interface Runtime
      * Coroutine-yielding sleep (does not block the scheduler).
      */
     public function sleep(float $seconds): void;
+
+    /**
+     * Get (creating once) a named shared-memory table.
+     */
+    public function table(string $name, int $rows = 1024, int $valueSize = 8192): Table;
 }

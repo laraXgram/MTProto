@@ -6,16 +6,13 @@ namespace LaraGram\MTProto\Runtime;
 
 use LaraGram\MTProto\Runtime\Contracts\Channel;
 use LaraGram\MTProto\Runtime\Contracts\Runtime;
+use LaraGram\MTProto\Runtime\Contracts\Table;
 
-/**
- * Swoole/OpenSwoole-backed {@see Runtime} — the single isolation point for the
- * coroutine extension. Every other class talks to the contract.
- *
- * Enables `SWOOLE_HOOK_ALL` on construction so the blocking socket I/O used by
- * SyncConnection yields to the scheduler instead of blocking the worker.
- */
 final class SwooleRuntime implements Runtime
 {
+    /** @var array<string, Table> named-table registry so the same name shares storage */
+    private array $tables = [];
+
     public function __construct(bool $enableHooks = true)
     {
         if ($enableHooks && $this->isSupported() && class_exists(\Swoole\Runtime::class)) {
@@ -25,8 +22,6 @@ final class SwooleRuntime implements Runtime
 
     public function isSupported(): bool
     {
-        // Prefer Surge's extension probe so detection matches the server runtime;
-        // fall back to a bare check when Surge is not installed (RULE 2).
         if (class_exists(\LaraGram\Surge\Swoole\SwooleExtension::class)) {
             return (new \LaraGram\Surge\Swoole\SwooleExtension())->isInstalled();
         }
@@ -63,7 +58,7 @@ final class SwooleRuntime implements Runtime
         $ms = max(1, (int) ($seconds * 1000));
 
         return \Swoole\Timer::tick($ms, static function () use ($callback): void {
-            $callback();
+            \Swoole\Coroutine::create($callback);
         });
     }
 
@@ -75,5 +70,12 @@ final class SwooleRuntime implements Runtime
     public function sleep(float $seconds): void
     {
         \Swoole\Coroutine::sleep($seconds);
+    }
+
+    public function table(string $name, int $rows = 1024, int $valueSize = 8192): Table
+    {
+        return $this->tables[$name] ??= $this->isSupported()
+            ? new SwooleTable($rows, $valueSize)
+            : new ArrayTable($valueSize);
     }
 }
