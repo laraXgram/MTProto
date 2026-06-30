@@ -4,19 +4,12 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Foundation;
 
-/**
- * Builders for `InputMedia*` constructors that wrap an uploaded file
- * ({@see FileUploader} output) for `messages.sendMedia`.
- *
- * Pure array builders — no I/O — so they are trivially testable and reusable
- * by the higher-level `Client::send*` helpers.
- */
 final class InputMedia
 {
     /**
      * inputMediaUploadedPhoto — a freshly uploaded photo.
      *
-     * @param array $file  An `inputFile`/`inputFileBig` from FileUploader.
+     * @param array $file An `inputFile`/`inputFileBig` from FileUploader.
      */
     public static function uploadedPhoto(array $file, ?int $ttlSeconds = null, bool $spoiler = false): array
     {
@@ -35,24 +28,25 @@ final class InputMedia
     /**
      * inputMediaUploadedDocument — any uploaded file (document/video/audio/…).
      *
-     * @param array                     $file        An `inputFile`/`inputFileBig`.
-     * @param string                    $mimeType    e.g. "image/png", "video/mp4".
-     * @param array<int, array<mixed>>  $attributes  DocumentAttribute constructors.
-     * @param array|null                $thumb       Optional uploaded thumbnail file.
+     * @param array $file An `inputFile`/`inputFileBig`.
+     * @param string $mimeType e.g. "image/png", "video/mp4".
+     * @param array<int, array<mixed>> $attributes DocumentAttribute constructors.
+     * @param array|null $thumb Optional uploaded thumbnail file.
      */
     public static function uploadedDocument(
-        array $file,
+        array  $file,
         string $mimeType,
-        array $attributes = [],
+        array  $attributes = [],
         ?array $thumb = null,
-        bool $forceFile = false,
-        bool $spoiler = false,
-        ?int $ttlSeconds = null,
-    ): array {
+        bool   $forceFile = false,
+        bool   $spoiler = false,
+        ?int   $ttlSeconds = null,
+    ): array
+    {
         $media = [
-            '_'          => 'inputMediaUploadedDocument',
-            'file'       => $file,
-            'mime_type'  => $mimeType,
+            '_' => 'inputMediaUploadedDocument',
+            'file' => $file,
+            'mime_type' => $mimeType,
             'attributes' => $attributes,
         ];
 
@@ -72,7 +66,49 @@ final class InputMedia
         return $media;
     }
 
-    // ── DocumentAttribute builders ──────────────────────────────────────
+    /**
+     * inputMediaPhoto — resend an already-stored photo by reference (no upload).
+     *
+     * @param int $id Photo id.
+     * @param int $accessHash Photo access_hash.
+     * @param string $fileReference Volatile file_reference bytes.
+     */
+    public static function photo(int $id, int $accessHash, string $fileReference, ?int $ttlSeconds = null, bool $spoiler = false): array
+    {
+        $media = [
+            '_' => 'inputMediaPhoto',
+            'id' => ['_' => 'inputPhoto', 'id' => $id, 'access_hash' => $accessHash, 'file_reference' => $fileReference],
+        ];
+
+        if ($spoiler) {
+            $media['spoiler'] = true;
+        }
+        if ($ttlSeconds !== null) {
+            $media['ttl_seconds'] = $ttlSeconds;
+        }
+
+        return $media;
+    }
+
+    /**
+     * inputMediaDocument — resend an already-stored document by reference.
+     */
+    public static function document(int $id, int $accessHash, string $fileReference, ?int $ttlSeconds = null, bool $spoiler = false): array
+    {
+        $media = [
+            '_' => 'inputMediaDocument',
+            'id' => ['_' => 'inputDocument', 'id' => $id, 'access_hash' => $accessHash, 'file_reference' => $fileReference],
+        ];
+
+        if ($spoiler) {
+            $media['spoiler'] = true;
+        }
+        if ($ttlSeconds !== null) {
+            $media['ttl_seconds'] = $ttlSeconds;
+        }
+
+        return $media;
+    }
 
     public static function attrFilename(string $fileName): array
     {
@@ -85,17 +121,18 @@ final class InputMedia
     }
 
     public static function attrVideo(
-        int $duration = 0,
-        int $w = 0,
-        int $h = 0,
+        int  $duration = 0,
+        int  $w = 0,
+        int  $h = 0,
         bool $supportsStreaming = false,
         bool $roundMessage = false,
-    ): array {
+    ): array
+    {
         $attr = [
-            '_'        => 'documentAttributeVideo',
+            '_' => 'documentAttributeVideo',
             'duration' => $duration,
-            'w'        => $w,
-            'h'        => $h,
+            'w' => $w,
+            'h' => $h,
         ];
 
         if ($supportsStreaming) {
@@ -109,11 +146,12 @@ final class InputMedia
     }
 
     public static function attrAudio(
-        int $duration = 0,
+        int     $duration = 0,
         ?string $title = null,
         ?string $performer = null,
-        bool $voice = false,
-    ): array {
+        bool    $voice = false,
+    ): array
+    {
         $attr = ['_' => 'documentAttributeAudio', 'duration' => $duration];
 
         if ($voice) {

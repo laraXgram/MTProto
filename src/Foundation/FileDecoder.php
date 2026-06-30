@@ -8,25 +8,6 @@ use LaraGram\MTProto\Core\Client;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\TL\TLObject;
 
-/**
- * Decodes and downloads files from Telegram MTProto media.
- *
- * Supports:
- *  - Photos (all sizes)
- *  - Documents (stickers, GIFs, audio, video, files)
- *  - Profile photos
- *
- * Usage:
- *   $decoder = new FileDecoder($client);
- *
- *   // Download from update data
- *   $bytes = $decoder->downloadMedia($request->message->media->toArray());
- *   $decoder->downloadMediaToFile($request->message->media->toArray(), '/path/to/file.jpg');
- *
- *   // Download from raw location
- *   $bytes = $decoder->downloadToMemory($location, $dcId, $size);
- *   $decoder->downloadToFile($location, $dcId, '/path/to/file', $size);
- */
 class FileDecoder
 {
     /**
@@ -46,12 +27,8 @@ class FileDecoder
     public function __construct(Client $client)
     {
         $this->client = $client;
-        $this->files  = $client->getFiles();
+        $this->files = $client->getFiles();
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    //  High-level: Download from media object
-    // ═══════════════════════════════════════════════════════════════════
 
     /**
      * Download media from an update and return the bytes.
@@ -126,10 +103,6 @@ class FileDecoder
         return $info;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Low-level: Download by InputFileLocation
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Download a file into memory by its InputFileLocation.
      *
@@ -192,8 +165,6 @@ class FileDecoder
      */
     public function downloadToFile(array $location, int $dcId, string $path, int $size = 0): int
     {
-        // Ensure directory exists; keep handle-based streaming for the body
-        // (large media — avoids re-opening the file per 1 MB chunk).
         $this->files->ensureDirectoryExists(dirname($path), 0755);
 
         $handle = fopen($path, 'wb');
@@ -247,10 +218,6 @@ class FileDecoder
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Media → InputFileLocation Resolution
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Resolve an InputFileLocation from a media object.
      *
@@ -263,11 +230,11 @@ class FileDecoder
         $constructor = $media['_'] ?? '';
 
         return match ($constructor) {
-            'messageMediaPhoto'    => $this->resolvePhotoLocation($media, $thumbSize),
+            'messageMediaPhoto' => $this->resolvePhotoLocation($media, $thumbSize),
             'messageMediaDocument' => $this->resolveDocumentLocation($media),
-            'photo'                => $this->resolvePhotoDirectLocation($media, $thumbSize),
-            'document'             => $this->resolveDocumentDirectLocation($media),
-            default                => null,
+            'photo' => $this->resolvePhotoDirectLocation($media, $thumbSize),
+            'document' => $this->resolveDocumentDirectLocation($media),
+            default => null,
         };
     }
 
@@ -294,12 +261,10 @@ class FileDecoder
             return null;
         }
 
-        // Find requested size or the largest one
         $targetSize = null;
         $targetSizeBytes = 0;
 
         if ($thumbSize !== null) {
-            // Find specific size type
             foreach ($sizes as $size) {
                 if (($size['type'] ?? '') === $thumbSize) {
                     $targetSize = $size;
@@ -316,7 +281,6 @@ class FileDecoder
 
             foreach ($sizes as $size) {
                 $sizeConstructor = $size['_'] ?? '';
-                // Skip stripped/path sizes (no downloadable bytes)
                 if ($sizeConstructor === 'photoStrippedSize' || $sizeConstructor === 'photoPathSize') {
                     continue;
                 }
@@ -332,7 +296,6 @@ class FileDecoder
         }
 
         if ($targetSize === null) {
-            // Fallback: just use last non-stripped size
             foreach (array_reverse($sizes) as $size) {
                 $sizeConstructor = $size['_'] ?? '';
                 if ($sizeConstructor !== 'photoStrippedSize' && $sizeConstructor !== 'photoPathSize') {
@@ -347,7 +310,6 @@ class FileDecoder
             return null;
         }
 
-        // photoCachedSize has bytes directly embedded
         if (($targetSize['_'] ?? '') === 'photoCachedSize') {
             // We can return the bytes directly — but caller expects a location.
             // Fall through and build the location anyway (the server will serve it).
@@ -397,10 +359,6 @@ class FileDecoder
         ];
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  RPC Call
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Call upload.getFile for a single chunk.
      *
@@ -413,16 +371,21 @@ class FileDecoder
      */
     protected function getFileChunk(array $location, int $dcId, int $offset, int $limit): array
     {
-        // If the file is on a different DC, we need to handle FILE_MIGRATE
-        // The invoke() method already handles this via the DC migration logic
-        $result = $this->client->invoke('upload.getFile', [
-            'precise' => true,
-            'location' => $location,
-            'offset' => $offset,
-            'limit' => $limit,
-        ]);
+        $pool = $this->client->pool();
+        $conn = $pool->connection($dcId);
 
-        // upload.getFile returns upload.file or upload.fileCdnRedirect
+        try {
+            $result = $this->fetchChunk($conn, $location, $offset, $limit);
+        } catch (MTProtoException $e) {
+            if ($dcId > 0 && $dcId !== $this->client->getDcId()
+                && str_contains($e->getMessage(), 'AUTH_KEY_UNREGISTERED')) {
+                $pool->ensureAuthorized($dcId);
+                $result = $this->fetchChunk($conn, $location, $offset, $limit);
+            } else {
+                throw $e;
+            }
+        }
+
         if (is_array($result) && ($result['_'] ?? '') === 'upload.fileCdnRedirect') {
             throw new MTProtoException('CDN file redirects are not yet supported. Use cdn_supported=false.');
         }
@@ -430,9 +393,18 @@ class FileDecoder
         return is_array($result) ? $result : ['bytes' => ''];
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Metadata Extraction
-    // ═══════════════════════════════════════════════════════════════════
+    /**
+     * Fetch one chunk over a specific (possibly cross-DC) connection.
+     */
+    private function fetchChunk(Client $conn, array $location, int $offset, int $limit): mixed
+    {
+        return $conn->invoke('upload.getFile', [
+            'precise' => true,
+            'location' => $location,
+            'offset' => $offset,
+            'limit' => $limit,
+        ]);
+    }
 
     /**
      * Extract MIME type from media.
@@ -447,8 +419,8 @@ class FileDecoder
 
         $doc = match ($constructor) {
             'messageMediaDocument' => $media['document'] ?? null,
-            'document'             => $media,
-            default                => null,
+            'document' => $media,
+            default => null,
         };
 
         return $doc['mime_type'] ?? null;
@@ -461,8 +433,8 @@ class FileDecoder
     {
         $doc = match ($media['_'] ?? '') {
             'messageMediaDocument' => $media['document'] ?? null,
-            'document'             => $media,
-            default                => null,
+            'document' => $media,
+            default => null,
         };
 
         if (!is_array($doc) || !isset($doc['attributes'])) {
@@ -505,10 +477,6 @@ class FileDecoder
         return ClientType::mediaTypeFromMessage(['media' => $media]) ?? 'document';
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Extension Helpers
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Guess file extension from MIME type.
      */
@@ -519,26 +487,26 @@ class FileDecoder
         }
 
         return match ($mimeType) {
-            'image/jpeg'       => '.jpg',
-            'image/png'        => '.png',
-            'image/gif'        => '.gif',
-            'image/webp'       => '.webp',
-            'image/bmp'        => '.bmp',
-            'video/mp4'        => '.mp4',
-            'video/quicktime'  => '.mov',
-            'audio/mpeg'       => '.mp3',
-            'audio/ogg'        => '.ogg',
-            'audio/mp4'        => '.m4a',
-            'audio/aac'        => '.aac',
-            'audio/flac'       => '.flac',
+            'image/jpeg' => '.jpg',
+            'image/png' => '.png',
+            'image/gif' => '.gif',
+            'image/webp' => '.webp',
+            'image/bmp' => '.bmp',
+            'video/mp4' => '.mp4',
+            'video/quicktime' => '.mov',
+            'audio/mpeg' => '.mp3',
+            'audio/ogg' => '.ogg',
+            'audio/mp4' => '.m4a',
+            'audio/aac' => '.aac',
+            'audio/flac' => '.flac',
             'application/x-tgsticker' => '.tgs',
             'image/x-tgsticker' => '.tgs',
-            'application/pdf'  => '.pdf',
-            'application/zip'  => '.zip',
+            'application/pdf' => '.pdf',
+            'application/zip' => '.zip',
             'application/x-rar-compressed' => '.rar',
-            'text/plain'       => '.txt',
-            'text/html'        => '.html',
-            default            => '',
+            'text/plain' => '.txt',
+            'text/html' => '.html',
+            default => '',
         };
     }
 
