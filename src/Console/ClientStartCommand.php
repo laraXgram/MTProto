@@ -5,13 +5,11 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Console;
 
 use LaraGram\Console\Command;
+use LaraGram\MTProto\Foundation\ClientDispatcher;
 use LaraGram\MTProto\Foundation\ClientKernel;
 use LaraGram\MTProto\Foundation\ClientManager;
-use LaraGram\MTProto\Foundation\ClientRequest;
-use LaraGram\MTProto\Foundation\ClientType;
 use LaraGram\MTProto\TL\TLObject;
 use LaraGram\MTProto\Updates\PumpLoop;
-use LaraGram\Listening\Exceptions\ListenNotFoundException;
 
 /**
  * Start the MTProto client update listener.
@@ -19,85 +17,118 @@ use LaraGram\Listening\Exceptions\ListenNotFoundException;
 class ClientStartCommand extends Command
 {
     protected $signature = 'client:start
-        {--session=default : Session name to use}';
+        {--session=default : Session name(s) to start — comma-separated for several}
+        {--all : Start every session defined in config(mtproto.sessions)}';
 
-    protected $description = 'Start the MTProto client and listen for updates';
+    protected $description = 'Start the MTProto client and listen for updates (one or many sessions)';
 
     public function handle(): int
     {
-        $session = $this->option('session');
-
         /** @var ClientManager $manager */
         $manager = $this->laragram['mtproto.manager'];
 
-        // ── Step 1: Check session state ───────────────────────────────
-        if (!$manager->sessionExists($session)) {
-            // No session file at all — run interactive auth
-            $this->components->warn("No session found for '{$session}'. Starting authentication...");
-            return $this->authenticateAndStart($manager, $session);
+        $sessions = $this->resolveSessions();
+
+        if ($sessions === []) {
+            $this->components->error('No sessions to start. Configure mtproto.sessions or pass --session=name.');
+            return self::FAILURE;
         }
 
-        // ── Step 2: Connect ───────────────────────────────────────────
+        // Connect + verify each requested session; collect the ones that came up.
+        $ready = [];
+        foreach ($sessions as $session) {
+            $actual = $this->prepareSession($manager, $session);
+            if ($actual !== null) {
+                $ready[] = $actual;
+            }
+        }
+
+        if ($ready === []) {
+            $this->components->error('No sessions connected.');
+            return self::FAILURE;
+        }
+
+        return $this->startListening($manager, array_values(array_unique($ready)));
+    }
+
+    /**
+     * Resolve which sessions to start from the options.
+     *
+     * @return string[]
+     */
+    protected function resolveSessions(): array
+    {
+        if ($this->option('all')) {
+            $configured = array_keys((array) ($this->laragram['config']['mtproto.sessions'] ?? []));
+            return $configured !== [] ? $configured : ['default'];
+        }
+
+        return array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) $this->option('session'))
+        )));
+    }
+
+    /**
+     * Connect + verify a single session, authenticating if needed. Returns the
+     * actual (possibly DC-migrated) session name, or null on failure.
+     */
+    protected function prepareSession(ClientManager $manager, string $session): ?string
+    {
+        if (!$manager->sessionExists($session)) {
+            $this->components->warn("No session found for '{$session}'. Starting authentication...");
+            return $this->authenticateAndConnect($manager, $session);
+        }
+
         $this->components->task("Connecting session '{$session}'", function () use ($manager, $session) {
             $manager->connect($session);
         });
 
         if (!$manager->isConnected($session)) {
-            $this->components->error('Failed to connect to Telegram.');
-            return self::FAILURE;
+            $this->components->error("Failed to connect session '{$session}'.");
+            return null;
         }
 
-        // ── Step 3: Verify session is authorized ──────────────────────
-        //    Try a lightweight API call to check if the auth key is valid.
-        //    If AUTH_KEY_UNREGISTERED, the session is stale → delete & re-auth.
+        // Lightweight call to validate the auth key; stale -> delete & re-auth.
         try {
             $manager->client($session)->invoke('help.getConfig');
         } catch (\Throwable $e) {
             $msg = $e->getMessage();
 
             if (str_contains($msg, 'AUTH_KEY_UNREGISTERED') || str_contains($msg, '401')) {
-                $this->components->warn('Session auth key is invalid or expired. Re-authenticating...');
-
-                // Disconnect and delete stale session
+                $this->components->warn("Session '{$session}' auth key invalid/expired. Re-authenticating...");
                 $manager->disconnect($session);
                 $manager->deleteSession($session);
-
-                // Clear cached client so a fresh one is created
-                return $this->authenticateAndStart($manager, $session);
+                return $this->authenticateAndConnect($manager, $session);
             }
 
-            // Other errors — bubble up
-            $this->components->error("Connection test failed: {$msg}");
-            return self::FAILURE;
+            $this->components->error("Connection test failed for '{$session}': {$msg}");
+            return null;
         }
 
-        // ── Step 4: Start listening ───────────────────────────────────
-        return $this->startListening($manager, $session);
+        return $session;
     }
 
     /**
-     * Run auth flow then start listening.
+     * Run the auth flow for a session then connect it. Returns the actual
+     * session name (DC migration may rename it), or null on failure.
      */
-    protected function authenticateAndStart(ClientManager $manager, string $session): int
+    protected function authenticateAndConnect(ClientManager $manager, string $session): ?string
     {
-        $exitCode = $this->call('client:auth', ['--session' => $session]);
-
-        if ($exitCode !== self::SUCCESS) {
-            $this->components->error('Authentication failed. Cannot start client.');
-            return self::FAILURE;
+        if ($this->call('client:auth', ['--session' => $session]) !== self::SUCCESS) {
+            $this->components->error("Authentication failed for '{$session}'.");
+            return null;
         }
 
         $this->newLine();
 
-        // After auth, the session name may have changed due to DC migration
-        // (e.g. 'default' → 'user_dc4'). Get the actual session name.
+        // After auth the session name may change due to DC migration.
         $actualSession = $manager->client($session)->getSessionName();
 
         if ($actualSession !== $session) {
             $this->components->info("Session migrated to DC: using '{$actualSession}'");
         }
 
-        // Forget and reconnect with the actual session name
         $manager->forget($session);
 
         $this->components->task("Connecting session '{$actualSession}'", function () use ($manager, $actualSession) {
@@ -105,123 +136,144 @@ class ClientStartCommand extends Command
         });
 
         if (!$manager->isConnected($actualSession)) {
-            $this->components->error('Failed to connect after authentication.');
-            return self::FAILURE;
+            $this->components->error("Failed to connect '{$actualSession}' after authentication.");
+            return null;
         }
 
-        return $this->startListening($manager, $actualSession);
+        return $actualSession;
     }
 
     /**
-     * Bootstrap kernel, load listens, wire handler, start update loop.
+     * Bootstrap kernel, load listens, then run the update loop(s).
+     *
+     * @param  string[]  $sessions
      */
-    protected function startListening(ClientManager $manager, string $session): int
+    protected function startListening(ClientManager $manager, array $sessions): int
     {
-        // ── Bootstrap ClientKernel ─────────────────────────────────────
         /** @var ClientKernel $kernel */
         $kernel = $this->laragram[ClientKernel::class];
         $kernel->bootstrap();
 
-        // Load client listens (from listens/client.php or wherever configured)
+        // Listen files (with their per-file session bindings) load once.
         $this->loadClientListens();
 
-        $this->components->info("Client '{$session}' connected and listening for updates...");
-        $this->newLine();
+        $usePump = (bool) ($this->laragram['config']['mtproto.use_pump'] ?? false);
 
-        $onUpdate = function (TLObject $update, string $type) use ($kernel, $session) {
-            $this->dispatchUpdate($kernel, $update, $type, $session);
-        };
+        if (!$usePump) {
+            if (count($sessions) > 1) {
+                $this->components->error(
+                    'Multiple sessions require mtproto.use_pump=true (the legacy handler is single-session).'
+                );
+                return self::FAILURE;
+            }
 
-        if ((bool) ($this->laragram['config']['mtproto.use_pump'] ?? false)) {
-            (new PumpLoop($manager->client($session)))->onUpdate($onUpdate)->run();
+            $session = $sessions[0];
+            $this->components->info("Client '{$session}' connected and listening for updates...");
+            $this->newLine();
+
+            $manager->handler($session)
+                ->onUpdate(fn (TLObject $u, string $t) => $this->dispatchUpdate($kernel, $u, $t, $session))
+                ->start();
 
             return self::SUCCESS;
         }
 
-        $manager->handler($session)->onUpdate($onUpdate)->start();
+        $pumps = [];
+        foreach ($sessions as $session) {
+            $pumps[$session] = (new PumpLoop($manager->client($session)))
+                ->onUpdate(fn (TLObject $u, string $t) => $this->dispatchUpdate($kernel, $u, $t, $session));
+        }
+
+        // Single session keeps its self-contained runner.
+        if (count($pumps) === 1) {
+            $session = array_key_first($pumps);
+            $this->components->info("Client '{$session}' connected and listening for updates...");
+            $this->newLine();
+
+            $pumps[$session]->run();
+            return self::SUCCESS;
+        }
+
+        return $this->runMultiSession($manager, $pumps);
+    }
+
+    /**
+     * Run several sessions concurrently inside ONE shared coroutine container.
+     *
+     * @param  array<string, PumpLoop>  $pumps
+     */
+    protected function runMultiSession(ClientManager $manager, array $pumps): int
+    {
+        $runtime = $manager->client(array_key_first($pumps))->getRuntime();
+
+        if (!$runtime->isSupported()) {
+            $this->components->error('Multi-session requires a coroutine runtime (mtproto.driver=swoole).');
+            return self::FAILURE;
+        }
+
+        // Close every bootstrap socket BEFORE entering the coroutine container.
+        foreach ($pumps as $pump) {
+            $pump->disconnectBootstrapSocket();
+        }
+
+        $this->components->info('Listening on '.count($pumps).' sessions: '.implode(', ', array_keys($pumps)));
+        $this->newLine();
+
+        $runtime->run(function () use ($runtime, $pumps) {
+            foreach ($pumps as $session => $pump) {
+                $runtime->spawn(function () use ($pump, $session) {
+                    try {
+                        $pump->boot();
+                    } catch (\Throwable $e) {
+                        \LaraGram\Support\Facades\Log::error(
+                            "[client:{$session}] stopped: {$e->getMessage()} "
+                            ."(if AUTH_KEY_UNREGISTERED, run: php laragram client:auth --session={$session})",
+                            ['exception' => $e],
+                        );
+                        try { $pump->stop(); } catch (\Throwable) {}
+                    }
+                });
+            }
+
+            $saveEvery = 30;
+            $ticks = 0;
+            while (true) {
+                $runtime->sleep(1.0);
+                if (++$ticks >= $saveEvery) {
+                    $ticks = 0;
+                    foreach ($pumps as $pump) {
+                        $pump->saveState();
+                    }
+                }
+            }
+        });
 
         return self::SUCCESS;
     }
 
     /**
-     * Dispatch an MTProto update through the ClientKernel pipeline.
+     * Dispatch an MTProto update through the shared ClientDispatcher.
      */
     protected function dispatchUpdate(ClientKernel $kernel, TLObject $update, string $type, string $session): void
     {
-        try {
-            $updateData = $update->toArray();
-
-            $request = ClientRequest::fromUpdate(
-                $updateData,
-                $type,
-                $session
-            );
-
-            // Inject the MTProto Client so $request->client() works in listens
-            /** @var ClientManager $manager */
-            $manager = $this->laragram['mtproto.manager'];
-            $request->setClient($manager->client($session));
-
-            try {
-                $response = $kernel->handle($request);
-                $kernel->terminate($request, $response);
-            } catch (ListenNotFoundException) {
-                // No handler registered for this verb — that's fine, skip silently
-            }
-
-            // ── Media-filtered dispatch ────────────────────────────────
-            // If this is a new/edited message with media, also dispatch
-            // with the media-specific verb (PHOTO, VIDEO, STICKER, etc.)
-            // so that onPhoto(), onSticker(), etc. handlers can fire.
-            if ($type === 'updateNewMessage' || $type === 'updateNewChannelMessage'
-                || $type === 'updateEditMessage' || $type === 'updateEditChannelMessage'
-            ) {
-                $message = $updateData['message'] ?? $updateData;
-                if (is_array($message) && isset($message['media'])) {
-                    $mediaVerb = ClientType::mediaTypeFromMessage($message);
-                    if ($mediaVerb !== null) {
-                        $mediaRequest = ClientRequest::fromUpdate(
-                            $updateData,
-                            $type,
-                            $session
-                        );
-                        $mediaRequest->setClient($manager->client($session));
-                        $mediaRequest->setMediaVerb(strtoupper($mediaVerb));
-
-                        try {
-                            $response = $kernel->handle($mediaRequest);
-                            $kernel->terminate($mediaRequest, $response);
-                        } catch (ListenNotFoundException) {
-                            // No handler for this media type — that's fine
-                        }
-                    }
-                }
-            }
-        } catch (\Throwable $e) {
-            // Log but don't crash the loop
-            try {
-                \LaraGram\Support\Facades\Log::error("[client:{$session}] Error dispatching {$type}: {$e->getMessage()}", [
-                    'exception' => $e,
-                ]);
-            } catch (\Throwable) {
-                error_log("[client:{$session}] Error dispatching {$type}: {$e->getMessage()}");
-            }
-        }
+        $this->laragram[ClientDispatcher::class]->dispatch($kernel, $update, $type, $session);
     }
 
     /**
-     * Load client listen definitions.
-     *
-     * Looks for listens/client.php and loads it through the
-     * Client facade's middleware group.
+     * Ensure client listens are loaded.
      */
     protected function loadClientListens(): void
     {
-        $clientListenFile = $this->laragram->basePath('listens/client.php');
+        $listener = $this->laragram['client.listener'];
 
-        if (file_exists($clientListenFile)) {
-            $clientListener = $this->laragram['client.listener'];
-            $clientListener->group(['middleware' => ['client']], $clientListenFile);
+        if (count($listener->getListens()) > 0) {
+            return;
+        }
+
+        $file = $this->laragram->basePath('listens/client.php');
+
+        if (file_exists($file)) {
+            $listener->group(['middleware' => ['client']], $file);
         }
     }
 }
