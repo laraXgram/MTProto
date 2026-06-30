@@ -4,98 +4,70 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Core;
 
-/**
- * Persistent peer database.
- *
- * Caches id → {access_hash, type, username, first_name, last_name}
- * so that the client can construct InputPeer / InputUser / InputChannel
- * without a prior contacts.resolveUsername call.
- *
- * Storage is a simple JSON file kept alongside session files.
- *
- * Design inspired by:
- *  - MadelineProto  PeerDatabase (DbArray indexed by peer id)
- *  - Pyrogram       SQLite "peers" table  (id, access_hash, type, username, phone)
- */
+use LaraGram\MTProto\Contracts\Store;
+use LaraGram\MTProto\Store\FileStore;
+
 class PeerDatabase
 {
-    // ── peer types (mirroring TL constructors) ─────────────────────────
-    public const TYPE_USER    = 'user';
-    public const TYPE_BOT     = 'bot';
-    public const TYPE_CHAT    = 'chat';
+    public const TYPE_USER = 'user';
+    public const TYPE_BOT = 'bot';
+    public const TYPE_CHAT = 'chat';
     public const TYPE_CHANNEL = 'channel';
     public const TYPE_SUPERGROUP = 'supergroup';
 
     /**
-     * Peer entries indexed by numeric id.
-     * Each entry: [
-     *   'id'          => int,
-     *   'access_hash' => int,
-     *   'type'        => string,   // user|bot|chat|channel|supergroup
-     *   'username'    => ?string,
-     *   'phone'       => ?string,
-     *   'first_name'  => ?string,
-     *   'last_name'   => ?string,
-     *   'updated_at'  => int,      // unix ts
-     * ]
-     *
      * @var array<int, array>
      */
     private array $peers = [];
 
     /**
-     * Username → peer id index for fast lookups.
+     * Username -> peer id index for fast lookups.
      *
      * @var array<string, int>
      */
     private array $usernameIndex = [];
 
     /**
-     * Phone → peer id index.
+     * Phone -> peer id index.
      *
      * @var array<string, int>
      */
     private array $phoneIndex = [];
 
     /**
-     * Path to the JSON file.
+     * Backing blob store and the key this database lives under.
      */
-    private string $filePath;
+    private Store $store;
+    private string $storeKey;
 
     /**
      * Whether the database was modified since last save.
      */
     private bool $dirty = false;
 
-    // ================================================================
-    //  Construction / Persistence
-    // ================================================================
-
-    private \LaraGram\Filesystem\Filesystem $files;
-
-    public function __construct(string $sessionDir, string $sessionName, ?\LaraGram\Filesystem\Filesystem $files = null)
+    /**
+     * @param Store|null $store
+     */
+    public function __construct(
+        string                           $sessionDir,
+        string                           $sessionName,
+        ?\LaraGram\Filesystem\Filesystem $files = null,
+        ?Store                           $store = null,
+    )
     {
-        $this->files = $files ?? new \LaraGram\Filesystem\Filesystem();
-        $this->files->ensureDirectoryExists($sessionDir, 0700);
-
-        $safe = preg_replace('/[^a-zA-Z0-9_-]/', '_', $sessionName);
-        $this->filePath = rtrim($sessionDir, '/') . '/' . $safe . '.peers';
+        $this->store = $store ?? new FileStore($sessionDir, '.peers', $files);
+        $this->storeKey = $sessionName;
 
         $this->load();
     }
 
     /**
-     * Load the database from disk.
+     * Load the database from the backing store.
      */
     public function load(): void
     {
-        if (!$this->files->exists($this->filePath)) {
-            return;
-        }
-
-        try {
-            $json = $this->files->get($this->filePath);
-        } catch (\Throwable) {
+        $json = $this->store->get($this->storeKey);
+        if ($json === null) {
             return;
         }
 
@@ -109,7 +81,7 @@ class PeerDatabase
         $this->phoneIndex = [];
 
         foreach ($data as $entry) {
-            $id = (int) ($entry['id'] ?? 0);
+            $id = (int)($entry['id'] ?? 0);
             if ($id === 0) {
                 continue;
             }
@@ -120,7 +92,7 @@ class PeerDatabase
     }
 
     /**
-     * Persist the database to disk.
+     * Persist the database to the backing store.
      */
     public function save(): void
     {
@@ -129,18 +101,12 @@ class PeerDatabase
         }
 
         $json = json_encode(array_values($this->peers), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-        $this->files->replace($this->filePath, $json);
+        $this->store->put($this->storeKey, $json);
         $this->dirty = false;
     }
 
-    // ================================================================
-    //  Adding peers
-    // ================================================================
-
     /**
      * Add or update a peer from a raw TL user/chat/channel object.
-     *
-     * Pyrogram-style: called after every RPC response via `cachePeersFromResponse()`.
      */
     public function addFromTL(array $object): void
     {
@@ -170,26 +136,25 @@ class PeerDatabase
      */
     private function addUser(array $user): void
     {
-        $id = (int) ($user['id'] ?? 0);
+        $id = (int)($user['id'] ?? 0);
         if ($id === 0) {
             return;
         }
 
-        // Skip "min" users without access_hash if we already have a full entry
         $accessHash = $user['access_hash'] ?? null;
-        if ($accessHash === null && isset($this->peers[$id]['access_hash'])) {
-            return; // keep existing full entry
+        if (empty($accessHash) && !empty($this->peers[$id]['access_hash'])) {
+            return;
         }
 
         $entry = [
-            'id'          => $id,
-            'access_hash' => (int) ($accessHash ?? 0),
-            'type'        => !empty($user['bot']) ? self::TYPE_BOT : self::TYPE_USER,
-            'username'    => $this->extractUsername($user),
-            'phone'       => $user['phone'] ?? null,
-            'first_name'  => $user['first_name'] ?? null,
-            'last_name'   => $user['last_name'] ?? null,
-            'updated_at'  => time(),
+            'id' => $id,
+            'access_hash' => (int)($accessHash ?? 0),
+            'type' => !empty($user['bot']) ? self::TYPE_BOT : self::TYPE_USER,
+            'username' => $this->extractUsername($user),
+            'phone' => $user['phone'] ?? null,
+            'first_name' => $user['first_name'] ?? null,
+            'last_name' => $user['last_name'] ?? null,
+            'updated_at' => time(),
         ];
 
         $this->putEntry($id, $entry);
@@ -200,20 +165,20 @@ class PeerDatabase
      */
     private function addChat(array $chat): void
     {
-        $id = (int) ($chat['id'] ?? 0);
+        $id = (int)($chat['id'] ?? 0);
         if ($id === 0) {
             return;
         }
 
         $entry = [
-            'id'          => $id,
+            'id' => $id,
             'access_hash' => 0,
-            'type'        => self::TYPE_CHAT,
-            'username'    => null,
-            'phone'       => null,
-            'first_name'  => $chat['title'] ?? null,
-            'last_name'   => null,
-            'updated_at'  => time(),
+            'type' => self::TYPE_CHAT,
+            'username' => null,
+            'phone' => null,
+            'first_name' => $chat['title'] ?? null,
+            'last_name' => null,
+            'updated_at' => time(),
         ];
 
         $this->putEntry($id, $entry);
@@ -224,34 +189,30 @@ class PeerDatabase
      */
     private function addChannel(array $channel): void
     {
-        $id = (int) ($channel['id'] ?? 0);
+        $id = (int)($channel['id'] ?? 0);
         if ($id === 0) {
             return;
         }
 
         $accessHash = $channel['access_hash'] ?? null;
-        if ($accessHash === null && isset($this->peers[$id]['access_hash'])) {
-            return;
+        if (empty($accessHash) && !empty($this->peers[$id]['access_hash'])) {
+            return; // keep existing full entry; don't clobber with a min channel
         }
 
         $isSupergroup = !empty($channel['megagroup']);
         $entry = [
-            'id'          => $id,
-            'access_hash' => (int) ($accessHash ?? 0),
-            'type'        => $isSupergroup ? self::TYPE_SUPERGROUP : self::TYPE_CHANNEL,
-            'username'    => $this->extractUsername($channel),
-            'phone'       => null,
-            'first_name'  => $channel['title'] ?? null,
-            'last_name'   => null,
-            'updated_at'  => time(),
+            'id' => $id,
+            'access_hash' => (int)($accessHash ?? 0),
+            'type' => $isSupergroup ? self::TYPE_SUPERGROUP : self::TYPE_CHANNEL,
+            'username' => $this->extractUsername($channel),
+            'phone' => null,
+            'first_name' => $channel['title'] ?? null,
+            'last_name' => null,
+            'updated_at' => time(),
         ];
 
         $this->putEntry($id, $entry);
     }
-
-    // ================================================================
-    //  Lookups
-    // ================================================================
 
     /**
      * Get a peer entry by numeric id.
@@ -315,22 +276,11 @@ class PeerDatabase
         return count($this->peers);
     }
 
-    // ================================================================
-    //  Bulk caching from RPC responses  (Pyrogram-style)
-    // ================================================================
-
     /**
      * Recursively walk an RPC response and cache every user / chat / channel.
-     *
-     * Pyrogram does this in `invoke()`:
-     *   await self.fetch_peers(getattr(r, "users", []))
-     *   await self.fetch_peers(getattr(r, "chats", []))
-     *
-     * We do the same but also walk nested objects.
      */
     public function cachePeersFromResponse(array $response): void
     {
-        // Top-level "users" and "chats" arrays (very common in Telegram responses)
         if (isset($response['users']) && is_array($response['users'])) {
             foreach ($response['users'] as $user) {
                 if (is_array($user)) {
@@ -347,19 +297,13 @@ class PeerDatabase
             }
         }
 
-        // Also check the response itself (e.g. contacts.resolvedPeer has 'peer')
         if (isset($response['_'])) {
             $this->addFromTL($response);
         }
     }
 
-    // ================================================================
-    //  Internals
-    // ================================================================
-
     private function putEntry(int $id, array $entry): void
     {
-        // Remove old username/phone indexes if entry exists
         if (isset($this->peers[$id])) {
             $old = $this->peers[$id];
             if (!empty($old['username'])) {
@@ -378,10 +322,10 @@ class PeerDatabase
     private function indexEntry(array $entry): void
     {
         if (!empty($entry['username'])) {
-            $this->usernameIndex[strtolower($entry['username'])] = (int) $entry['id'];
+            $this->usernameIndex[strtolower($entry['username'])] = (int)$entry['id'];
         }
         if (!empty($entry['phone'])) {
-            $this->phoneIndex[ltrim($entry['phone'], '+')] = (int) $entry['id'];
+            $this->phoneIndex[ltrim($entry['phone'], '+')] = (int)$entry['id'];
         }
     }
 
@@ -390,7 +334,6 @@ class PeerDatabase
      */
     private function extractUsername(array $object): ?string
     {
-        // Prefer 'username' field; fall back to first entry of 'usernames' array
         if (!empty($object['username'])) {
             return $object['username'];
         }

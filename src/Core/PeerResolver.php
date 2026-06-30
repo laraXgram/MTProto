@@ -6,48 +6,27 @@ namespace LaraGram\MTProto\Core;
 
 use LaraGram\MTProto\Exceptions\MTProtoException;
 
-/**
- * Resolves simplified peer references into proper TL InputPeer / InputUser /
- * InputChannel arrays ready for serialisation.
- *
- * Accepted input formats:
- *  - int           → lookup by id in PeerDatabase
- *  - '@username'   → lookup by username (PeerDatabase first, then API resolve)
- *  - 'username'    → same as above (leading @ optional)
- *  - 'self' / 'me' → inputPeerSelf / inputUserSelf
- *  - array with '_' key → pass through (already a TL object)
- *
- * If the peer is not found in the cache, the resolver calls
- * contacts.resolveUsername (for strings) or users.getUsers / channels.getChannels
- * (for numeric ids with access_hash = 0) to fetch and cache it.
- *
- * Design follows Pyrogram's resolve_peer() and MadelineProto's getInfo().
- */
 class PeerResolver
 {
     public function __construct(
         private readonly PeerDatabase $peerDb,
         private readonly Client       $client,
-    ) {}
-
-    // ================================================================
-    //  InputPeer  (for methods that take InputPeer type)
-    // ================================================================
+    )
+    {
+    }
 
     /**
      * Resolve a peer reference to an InputPeer TL array.
      *
-     * @param  int|string|array $peer
-     * @return array  TL InputPeer object (with '_' key)
+     * @param int|string|array $peer
+     * @return array
      */
     public function resolveInputPeer(int|string|array $peer): array
     {
-        // Already a TL object
         if (is_array($peer) && isset($peer['_'])) {
             return $peer;
         }
 
-        // 'self' / 'me'
         if (is_string($peer) && in_array(strtolower($peer), ['self', 'me'], true)) {
             return ['_' => 'inputPeerSelf'];
         }
@@ -56,28 +35,24 @@ class PeerResolver
 
         return match ($entry['type']) {
             PeerDatabase::TYPE_USER,
-            PeerDatabase::TYPE_BOT     => [
-                '_'           => 'inputPeerUser',
-                'user_id'     => $entry['id'],
+            PeerDatabase::TYPE_BOT => [
+                '_' => 'inputPeerUser',
+                'user_id' => $entry['id'],
                 'access_hash' => $entry['access_hash'],
             ],
-            PeerDatabase::TYPE_CHAT    => [
-                '_'       => 'inputPeerChat',
+            PeerDatabase::TYPE_CHAT => [
+                '_' => 'inputPeerChat',
                 'chat_id' => $entry['id'],
             ],
             PeerDatabase::TYPE_CHANNEL,
             PeerDatabase::TYPE_SUPERGROUP => [
-                '_'           => 'inputPeerChannel',
-                'channel_id'  => $entry['id'],
+                '_' => 'inputPeerChannel',
+                'channel_id' => $entry['id'],
                 'access_hash' => $entry['access_hash'],
             ],
             default => throw new MTProtoException("Unknown peer type: {$entry['type']}"),
         };
     }
-
-    // ================================================================
-    //  InputUser  (for methods that take InputUser type)
-    // ================================================================
 
     /**
      * Resolve a peer reference to an InputUser TL array.
@@ -99,15 +74,11 @@ class PeerResolver
         }
 
         return [
-            '_'           => 'inputUser',
-            'user_id'     => $entry['id'],
+            '_' => 'inputUser',
+            'user_id' => $entry['id'],
             'access_hash' => $entry['access_hash'],
         ];
     }
-
-    // ================================================================
-    //  InputChannel  (for methods that take InputChannel type)
-    // ================================================================
 
     /**
      * Resolve a peer reference to an InputChannel TL array.
@@ -125,61 +96,51 @@ class PeerResolver
         }
 
         return [
-            '_'           => 'inputChannel',
-            'channel_id'  => $entry['id'],
+            '_' => 'inputChannel',
+            'channel_id' => $entry['id'],
             'access_hash' => $entry['access_hash'],
         ];
     }
 
-    // ================================================================
-    //  Core resolver
-    // ================================================================
-
     /**
      * Resolve a peer reference to a PeerDatabase entry.
      *
-     * If not found in cache, fetches from the API and caches it.
-     *
-     * @param  int|string $peer  Numeric id, @username, or username
-     * @return array      Peer database entry
-     * @throws MTProtoException If the peer cannot be resolved
+     * @param int|string $peer
+     * @return array
+     * @throws MTProtoException
      */
     private function resolvePeerEntry(int|string $peer): array
     {
-        // ── Numeric id ─────────────────────────────────────────────────
         if (is_int($peer)) {
-            // Bot API negative ID format: -100xxxx = channel/supergroup, -xxxx = basic group
             if ($peer < 0) {
                 $peer = $this->normalizeBotApiId($peer);
             }
 
             $entry = $this->peerDb->getPeer($peer);
-            if ($entry !== null) {
+            if ($entry !== null && $this->isComplete($entry)) {
                 return $entry;
             }
 
-            // Not cached — try fetching with access_hash=0
-            // (works for users we've interacted with)
             $this->fetchAndCachePeerById($peer);
 
             $entry = $this->peerDb->getPeer($peer);
-            if ($entry !== null) {
+            if ($entry !== null && $this->isComplete($entry)) {
                 return $entry;
             }
 
-            throw new MTProtoException("Peer id {$peer} not found — interact with this peer first or use @username");
+            throw new MTProtoException(
+                "Peer id {$peer} has no usable access_hash — the account must share a "
+                . "dialog/chat/contact with it, or resolve it once by @username first."
+            );
         }
 
-        // ── Username ───────────────────────────────────────────────────
         $username = strtolower(ltrim(trim($peer), '@'));
 
-        // Check cache first
         $entry = $this->peerDb->getByUsername($username);
         if ($entry !== null) {
             return $entry;
         }
 
-        // Resolve via API
         $this->fetchAndCacheByUsername($username);
 
         $entry = $this->peerDb->getByUsername($username);
@@ -190,19 +151,28 @@ class PeerResolver
         throw new MTProtoException("Username @{$username} not found");
     }
 
-    // ================================================================
-    //  API fetchers
-    // ================================================================
+    /**
+     * Whether a cached entry is usable for input construction. Users and
+     * channels need a non-zero access_hash; a zero hash means a "min" peer that
+     * must be re-resolved before it can be addressed. Basic groups carry no
+     * access_hash and are always complete.
+     */
+    private function isComplete(array $entry): bool
+    {
+        if (($entry['type'] ?? '') === PeerDatabase::TYPE_CHAT) {
+            return true;
+        }
+
+        return !empty($entry['access_hash']);
+    }
 
     /**
      * Fetch a peer by numeric id from the API and cache it.
-     *
-     * We use users.getUsers(id=inputUser(id, 0)) for users and
-     * channels.getChannels for channels. Chats always have access_hash = 0.
      */
     private function fetchAndCachePeerById(int $id): void
     {
-        // Try as user first
+        $logger = $this->client->getLogger();
+
         try {
             $result = $this->client->invokeRaw('users.getUsers', [
                 'id' => [
@@ -213,13 +183,19 @@ class PeerResolver
             if (!empty($result) && is_array($result)) {
                 foreach ($result as $user) {
                     if (is_array($user) && ($user['_'] ?? '') === 'user') {
+                        if (empty($user['access_hash'])) {
+                            $logger?->warning(
+                                "users.getUsers returned a min user for id {$id} (access_hash 0) — "
+                                . "not addressable by id until a shared dialog/contact is primed."
+                            );
+                        }
                         $this->peerDb->addFromTL($user);
                     }
                 }
             }
             return;
-        } catch (\Throwable) {
-            // Not a user — try channel
+        } catch (\Throwable $e) {
+            $logger?->debug("users.getUsers({$id}, hash 0) failed: {$e->getMessage()}");
         }
 
         try {
@@ -236,8 +212,8 @@ class PeerResolver
                     }
                 }
             }
-        } catch (\Throwable) {
-            // Ignore — caller will throw "not found"
+        } catch (\Throwable $e) {
+            $logger?->debug("channels.getChannels({$id}, hash 0) failed: {$e->getMessage()}");
         }
     }
 
@@ -251,35 +227,24 @@ class PeerResolver
                 'username' => $username
             ]);
 
-            // contacts.resolvedPeer response has 'users' and 'chats' arrays
             $this->peerDb->cachePeersFromResponse($result);
         } catch (\Throwable $e) {
             $this->client->getLogger()->warning("Failed to resolve @{$username}: {$e->getMessage()}");
         }
     }
 
-    // ================================================================
-    //  Bot API ID normalization
-    // ================================================================
-
     /**
      * Convert Bot API negative IDs to MTProto raw IDs.
      *
-     * Bot API uses:
-     *  -100xxxxxxxxxx  → channel/supergroup (strip -100 prefix)
-     *  -xxxxxxxxxx     → basic group chat (negate)
-     *
-     * @param int $id Negative Bot API ID
-     * @return int    Positive MTProto raw ID
+     * @param int $id
+     * @return int
      */
     private function normalizeBotApiId(int $id): int
     {
-        // Channel/supergroup: -100xxxx → xxxx
         if ($id <= -1000000000000) {
             return -($id + 1000000000000);
         }
 
-        // Basic group: -xxxx → xxxx
         return -$id;
     }
 }

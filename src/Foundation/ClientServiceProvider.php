@@ -6,12 +6,9 @@ namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\MTProto\Core\Client as MTProtoClient;
 use LaraGram\MTProto\Auth\Authorization;
-use LaraGram\MTProto\Contracts\EventLoopInterface;
-use LaraGram\MTProto\Driver\Sync\SyncEventLoop;
 use LaraGram\MTProto\Listening\ClientListener;
 use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\Runtime\SwooleRuntime;
-use LaraGram\MTProto\Updates\UpdatesHandler;
 use LaraGram\Support\ServiceProvider;
 
 /**
@@ -40,6 +37,31 @@ class ClientServiceProvider extends ServiceProvider
         $this->registerCommands();
         $this->publishConfig();
         $this->registerFacadeAlias();
+        $this->registerClientMiddlewareGroup();
+        $this->registerSurgePumpProcess();
+    }
+
+    protected function registerSurgePumpProcess(): void
+    {
+        if (!($this->app['config']['mtproto.surge.autostart'] ?? true)) {
+            return;
+        }
+
+        if (!$this->app->bound('surge') || !class_exists(\LaraGram\Surge\Facades\Surge::class)) {
+            return;
+        }
+
+        \LaraGram\Surge\Facades\Surge::process(
+            \LaraGram\MTProto\Foundation\PumpProcess::class,
+            'mtproto-pump',
+        );
+    }
+
+    protected function registerClientMiddlewareGroup(): void
+    {
+        $this->app['client.listener']->middlewareGroup('client', [
+            \LaraGram\MTProto\Listening\Middleware\ClientSubstituteBindings::class,
+        ]);
     }
 
     protected function mergeConfig(): void
@@ -92,12 +114,6 @@ class ClientServiceProvider extends ServiceProvider
         });
     }
 
-    /**
-     * Bind the coroutine {@see Runtime} (RULE 1). The Swoole hooks are only
-     * enabled when the driver is actually 'swoole', so the sync path keeps
-     * native blocking semantics. A future RoadRunner/FrankenPHP backend = bind a
-     * different Runtime here; nothing in Core changes.
-     */
     protected function registerRuntime(): void
     {
         $this->app->singleton(Runtime::class, function ($app) {

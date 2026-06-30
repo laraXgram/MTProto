@@ -144,8 +144,8 @@ class ClientRequest implements ProvidesListenContext
     /**
      * Create a new ClientRequest.
      *
-     * @param array  $update  The raw MTProto update array
-     * @param string $type    The constructor name (e.g. 'updateNewMessage')
+     * @param array $update The raw MTProto update array
+     * @param string $type The constructor name (e.g. 'updateNewMessage')
      * @param string $session The session name
      */
     public function __construct(array $update = [], string $type = '', string $session = 'default')
@@ -163,10 +163,6 @@ class ClientRequest implements ProvidesListenContext
         return new static($update, $type, $session);
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Core Accessors
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Get the raw constructor type name (e.g. 'updateNewMessage').
      */
@@ -176,11 +172,24 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Get the session name.
+     * Get the session name this update arrived on.
      */
     public function session(): string
     {
         return $this->session;
+    }
+
+    /**
+     * Reply/act through a *different* session than the one this update arrived
+     * on.
+     */
+    public function usingSession(string $session): static
+    {
+        $clone = clone $this;
+        $clone->session = $session;
+        $clone->client = null;
+
+        return $clone;
     }
 
     /**
@@ -201,9 +210,6 @@ class ClientRequest implements ProvidesListenContext
 
     /**
      * Get the message text.
-     *
-     * In MTProto, the text field inside a message is called "message":
-     *   updateNewMessage → message → message (the text string)
      */
     public function text(): ?string
     {
@@ -226,16 +232,8 @@ class ClientRequest implements ProvidesListenContext
         return $this->data['query'] ?? null;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  File Download
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Get a FileDecoder instance for downloading files.
-     *
-     * Usage:
-     *   $bytes = $request->file()->downloadMedia($request->message->media->toArray());
-     *   $request->file()->downloadMediaToFile($request->message->media->toArray(), '/path/to/file.jpg');
      */
     public function file(): FileDecoder
     {
@@ -244,9 +242,6 @@ class ClientRequest implements ProvidesListenContext
 
     /**
      * Download the media attached to this update's message.
-     *
-     * Shortcut for:
-     *   $request->file()->downloadMedia($request->message->media->toArray())
      *
      * @param string|null $thumbSize Photo size type (e.g. 'x', 'y', 'w'). Defaults to largest.
      * @return string The file bytes
@@ -263,9 +258,6 @@ class ClientRequest implements ProvidesListenContext
 
     /**
      * Download the media to a file path.
-     *
-     * Shortcut for:
-     *   $request->file()->downloadMediaToFile($request->message->media->toArray(), $path)
      *
      * @param string $path Destination file path
      * @param string|null $thumbSize Photo size type (e.g. 'x', 'y', 'w'). Defaults to largest.
@@ -284,8 +276,6 @@ class ClientRequest implements ProvidesListenContext
     /**
      * Get info about the media file without downloading it.
      *
-     * Returns: location, dc_id, size, mime_type, file_name, media_type
-     *
      * @param string|null $thumbSize Photo size type override
      * @return array|null File info or null if no media
      */
@@ -298,10 +288,6 @@ class ClientRequest implements ProvidesListenContext
 
         return $this->file()->getFileInfo($media, $thumbSize);
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    //  Verb / Dispatch
-    // ═══════════════════════════════════════════════════════════════════
 
     /**
      * Get the verb for the Listening system.
@@ -338,10 +324,6 @@ class ClientRequest implements ProvidesListenContext
         return $this->method() === $method;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  ProvidesListenContext — drives the shared Listening engine
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * {@inheritdoc}
      *
@@ -357,7 +339,7 @@ class ClientRequest implements ProvidesListenContext
      *
      * Returns the regex-matchable string for the given verb. Structural verbs
      * (catch-all media/update handlers, etc.) carry no string to match and
-     * return null — the verb match alone is then sufficient.
+     * return null, the verb match alone is then sufficient.
      */
     public function listenValue(string $verb): ?string
     {
@@ -381,9 +363,17 @@ class ClientRequest implements ProvidesListenContext
         return $this->data['message']['entities'] ?? [];
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Client
-    // ═══════════════════════════════════════════════════════════════════
+    /**
+     * {@inheritdoc}
+     *
+     * The scope for an MTProto update is the **session** it arrived on, so a
+     * listen file bound with `forSessions('x')` only runs for that account.
+     * Carried on the request object → coroutine/multi-session safe.
+     */
+    public function listenScope(): ?string
+    {
+        return $this->session;
+    }
 
     /**
      * Get the MTProto Client instance for this session.
@@ -408,10 +398,6 @@ class ClientRequest implements ProvidesListenContext
         return $this;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Listen Resolver
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Get the listen handling the request.
      */
@@ -431,7 +417,8 @@ class ClientRequest implements ProvidesListenContext
      */
     public function getListenResolver(): Closure
     {
-        return $this->listenResolver ?: function () {};
+        return $this->listenResolver ?: function () {
+        };
     }
 
     /**
@@ -443,17 +430,8 @@ class ClientRequest implements ProvidesListenContext
         return $this;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Property Access / Magic
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
      * Property-style access to update data.
-     *
-     * Returns TLObject subclasses for nested arrays (with full auto-complete):
-     *   $request->message->peer_id->user_id  → int
-     *   $request->message->media->photo      → Photo
-     *   $request->message->entities[0]->type → string
      *
      * @return \LaraGram\MTProto\TL\TLObject|mixed|null
      */
@@ -465,16 +443,13 @@ class ClientRequest implements ProvidesListenContext
 
         $value = $this->data[$name];
 
-        // Nested arrays with TL constructor → resolve to proper Type class
         if (is_array($value)) {
             if (isset($value['_'])) {
-                // Single TL object (e.g. message, peer_id)
                 $wrapped = TLObject::fromArray($value);
                 $this->data[$name] = $wrapped; // cache
                 return $wrapped;
             }
 
-            // Array of TL objects (e.g. entities, users)
             if (!empty($value)) {
                 $first = reset($value);
                 if (is_array($first) && isset($first['_'])) {
@@ -484,7 +459,6 @@ class ClientRequest implements ProvidesListenContext
                 }
             }
 
-            // Plain array (e.g. int[] messages) — return as-is
             return $value;
         }
 
@@ -501,10 +475,6 @@ class ClientRequest implements ProvidesListenContext
 
     /**
      * Forward MTProto API method calls to the underlying Client.
-     *
-     * Enables flat-style calls directly on the request:
-     *   $request->sendMessage(peer: ..., message: 'Hello!');
-     *   $request->editMessage(peer: ..., id: ..., message: 'Edited');
      *
      * IDE auto-complete is provided via @mixin \LaraGram\MTProto\Generated\ClientIdeHelper.
      */

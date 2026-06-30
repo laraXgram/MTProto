@@ -10,6 +10,10 @@ use LaraGram\Support\Facades\Facade;
  * Resolves to the 'client.listener' binding (ClientListener instance).
  *
  * === Messages ===
+ * @method static \LaraGram\Listening\ListenRegistrar incomming()
+ * @method static \LaraGram\Listening\ListenRegistrar outgoing()
+ * @method static \LaraGram\Listening\ListenRegistrar scope(string $scope)
+ *
  * @method static \LaraGram\Listening\Listen onMessage(\Closure|array|string $action) Listen for all new messages
  * @method static \LaraGram\Listening\Listen onText(string $pattern, \Closure|array|string $action) Listen for messages matching a text pattern
  * @method static \LaraGram\Listening\Listen onCommand(string|array $command, \Closure|array|string $action) Listen for a slash command (optional $args captured)
@@ -99,7 +103,11 @@ use LaraGram\Support\Facades\Facade;
  *
  * === Routing ===
  * @method static \LaraGram\MTProto\Listening\ClientListenRegistrar middleware(array|string $middleware)
+ * @method static \LaraGram\MTProto\Listening\ClientListenRegistrar forSessions(array|string $sessions) Scope the following listens to one or more sessions
  * @method static \LaraGram\MTProto\Listening\ClientListener group(array $attributes, \Closure|array|string $listens)
+ *
+ * === Sending ===
+ * @method static \LaraGram\MTProto\Core\Client session(string $name = 'default') Get the live MTProto client for a session (to send outside a handler / via another account)
  *
  * @see \LaraGram\MTProto\Listening\ClientListener
  */

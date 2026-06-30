@@ -17,54 +17,26 @@ use LaraGram\MTProto\TL\TLSerializer;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\Exceptions\SecurityException;
 
-/**
- * MessagePump — the single-reader MTProto core (Phase 1.1).
- *
- * Replaces the lock-step {@see RPCHandler::receiveResponse()} poll loop and the
- * {@see \LaraGram\MTProto\Updates\UpdateLoop} duplicate read path with ONE
- * reader coroutine. Two readers on one socket corrupt the stream the moment an
- * RPC response and a pushed update overlap; with a single reader every frame is
- * decrypted exactly once and routed by type.
- *
- *   coroutine ──invoke()──▶ Connection ──write-mutex──▶ socket
- *      ▲ Channel.pop                                     │
- *      └──── result ◀── readLoop (only reader): decrypt → route
- *                        rpc_result → pending Channel
- *                        updates    → update handler (never blocks pump)
- *                        salts/acks/pong/new_session → handled inline
- *
- * All coroutine/channel/timer/sleep primitives come from the injected
- * {@see Runtime} (RULE 1) — this class never touches `\Swoole\*` directly, so a
- * future RoadRunner/FrankenPHP/OpenSwoole backend is a Runtime swap, nothing else.
- *
- * Framework-agnostic by design (DI rule): collaborators injected, the reconnect
- * strategy is a callable supplied by the owner (Client), no container access.
- *
- * @internal Validate against a test DC before the old read paths are deleted.
- */
 final class MessagePump
 {
-    private const GZIP_PACKED        = 0x3072cfa1;
-    private const MSG_CONTAINER      = 0x73f1f8dc;
-    private const RPC_RESULT         = 0xf35c6d01;
-    private const RPC_ERROR          = 0x2144ca19;
-    private const MSGS_ACK           = 0x62d6b459;
+    private const GZIP_PACKED = 0x3072cfa1;
+    private const MSG_CONTAINER = 0x73f1f8dc;
+    private const RPC_RESULT = 0xf35c6d01;
+    private const RPC_ERROR = 0x2144ca19;
+    private const MSGS_ACK = 0x62d6b459;
     private const BAD_MSG_NOTIFICATION = 0xa7eff811;
-    private const BAD_SERVER_SALT    = 0xedab447b;
+    private const BAD_SERVER_SALT = 0xedab447b;
     private const NEW_SESSION_CREATED = 0x9ec20908;
-    private const PONG               = 0x347773c5;
-    private const FUTURE_SALTS       = 0xae500895;
-    private const MSGS_STATE_REQ     = 0xda69fb52;
-    private const MSG_DETAILED_INFO  = 0x276d3ec6;
+    private const PONG = 0x347773c5;
+    private const FUTURE_SALTS = 0xae500895;
+    private const MSGS_STATE_REQ = 0xda69fb52;
+    private const MSG_DETAILED_INFO = 0x276d3ec6;
     private const MSG_NEW_DETAILED_INFO = 0x809db6df;
 
-    /** @var int Max allowed size of gzip-decompressed payloads (16 MiB) — zip-bomb guard. */
-    private const MAX_GZIP_OUTPUT = 16 * 1024 * 1024;
-
-    /** @var int Max server msg_ids retained for replay detection. */
-    private const SEEN_MSG_ID_LIMIT = 1024;
-
     private TLSerializer $serializer;
+
+    /** Shared frame crypto. */
+    private FrameCodec $codec;
 
     /**
      * In-flight RPC calls keyed by the client msg_id we sent.
@@ -74,12 +46,6 @@ final class MessagePump
 
     /** @var array<int> Server msg_ids awaiting acknowledgement. */
     private array $pendingAcks = [];
-
-    /**
-     * Sliding window of server msg_ids already seen (replay protection).
-     * @var array<int, true>
-     */
-    private array $seenMsgIds = [];
 
     private bool $initialized = false;
     private bool $running = false;
@@ -107,28 +73,26 @@ final class MessagePump
     private float $pingInterval = 25.0;
 
     public function __construct(
-        private ConnectionInterface $connection,
+        private ConnectionInterface         $connection,
         private readonly TransportInterface $transport,
-        private readonly CryptoInterface $crypto,
-        private readonly SessionInterface $session,
-        private readonly TLParser $parser,
-        private readonly Runtime $runtime,
-        int $apiId = 0,
-        string $apiHash = '',
-        private ?LoggerInterface $logger = null,
-    ) {
+        private readonly CryptoInterface    $crypto,
+        private readonly SessionInterface   $session,
+        private readonly TLParser           $parser,
+        private readonly Runtime            $runtime,
+        int                                 $apiId = 0,
+        string                              $apiHash = '',
+        private ?LoggerInterface            $logger = null,
+    )
+    {
         $this->serializer = new TLSerializer($parser);
-        $this->apiId   = $apiId;
+        $this->codec = new FrameCodec($crypto, $session, $transport, $logger);
+        $this->apiId = $apiId;
         $this->apiHash = $apiHash;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Configuration
-    // ════════════════════════════════════════════════════════════════════
-
     public function setApiCredentials(int $apiId, string $apiHash): void
     {
-        $this->apiId   = $apiId;
+        $this->apiId = $apiId;
         $this->apiHash = $apiHash;
     }
 
@@ -160,7 +124,7 @@ final class MessagePump
     }
 
     /**
-     * Sink for pushed update containers. The pump never blocks on this — the
+     * Sink for pushed update containers. The pump never blocks on this. the
      * handler must hand off (queue a coroutine) and return immediately.
      *
      * @param callable(array): void $handler
@@ -174,10 +138,6 @@ final class MessagePump
     {
         $this->pingInterval = $seconds;
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Lifecycle
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Spawn the reader coroutine + keep-alive/ack timers. MUST be called from
@@ -202,7 +162,7 @@ final class MessagePump
 
         $this->running = true;
 
-        // Single reader coroutine — the only thing that reads the socket.
+        // Single reader coroutine - the only thing that reads the socket.
         $this->runtime->spawn(function (): void {
             $this->readLoop();
         });
@@ -221,7 +181,10 @@ final class MessagePump
         $this->running = false;
 
         foreach ($this->timers as $id) {
-            try { $this->runtime->clearTimer($id); } catch (\Throwable) {}
+            try {
+                $this->runtime->clearTimer($id);
+            } catch (\Throwable) {
+            }
         }
         $this->timers = [];
 
@@ -236,10 +199,6 @@ final class MessagePump
     {
         return $this->running;
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Connection initialisation
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Ping + InvokeWithLayer(InitConnection(help.getConfig)). Requires the
@@ -259,11 +218,11 @@ final class MessagePump
         $device = $this->deviceProfile ??= DeviceProfile::preset(DeviceProfile::DEFAULT_PRESET);
 
         $initConnection = array_merge([
-            '_'               => 'initConnection',
-            'flags'           => 0,
-            'api_id'          => $this->apiId,
+            '_' => 'initConnection',
+            'flags' => 0,
+            'api_id' => $this->apiId,
         ], $device->toInitConnection(), [
-            'query'           => ['_' => 'help.getConfig'],
+            'query' => ['_' => 'help.getConfig'],
         ]);
 
         $result = $this->invoke('invokeWithLayer', [
@@ -276,19 +235,15 @@ final class MessagePump
         return is_array($result) ? $result : [];
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Invoke — concurrency-safe; N callers park on their own channel
-    // ════════════════════════════════════════════════════════════════════
-
     /**
      * Serialize a method, send it under the write-lock, then block this
      * coroutine on a result channel until the reader routes the response.
      *
-     * @param string $method        e.g. "messages.sendMessage"
-     * @param array  $params        Method parameters (already preprocessed)
-     * @param float  $timeout       Seconds to wait before throwing
-     * @param bool   $contentRelated Counts toward the content seqno
-     * @return mixed Deserialized TL result
+     * @param string $method
+     * @param array $params
+     * @param float $timeout
+     * @param bool $contentRelated
+     * @return mixed
      * @throws MTProtoException
      */
     public function invoke(string $method, array $params = [], float $timeout = 30.0, bool $contentRelated = true): mixed
@@ -304,9 +259,9 @@ final class MessagePump
      */
     public function ping(): int
     {
-        $pingId  = random_int(PHP_INT_MIN, PHP_INT_MAX);
+        $pingId = random_int(PHP_INT_MIN, PHP_INT_MAX);
         $payload = $this->serializer->serialize(['_' => 'ping', 'ping_id' => $pingId]);
-        $result  = $this->sendAndWait($payload, false, 'ping', 10.0);
+        $result = $this->sendAndWait($payload, false, 'ping', 10.0);
 
         if (($result['_'] ?? '') !== 'pong') {
             throw new MTProtoException('Expected pong response');
@@ -324,17 +279,14 @@ final class MessagePump
     {
         $channel = $this->runtime->channel(1);
 
-        // Register the pending call BEFORE the socket write: the write yields
-        // under the coroutine hook, during which the reader may already route the
-        // response — if pending isn't set yet that reply is dropped.
-        [$msgId, $packet] = $this->encryptFrame($payload, $contentRelated);
+        [$msgId, $packet] = $this->codec->encrypt($payload, $contentRelated);
         $this->pending[$msgId] = new PendingCall(
             channel: $channel,
             payload: $payload,
             contentRelated: $contentRelated,
             method: $method,
         );
-        $this->withWriteLock(fn () => $this->connection->send($packet));
+        $this->withWriteLock(fn() => $this->connection->send($packet));
 
         $boxed = $channel->pop($timeout);
 
@@ -350,62 +302,17 @@ final class MessagePump
         return $boxed['result'];
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Encryption / framing (outgoing)
-    // ════════════════════════════════════════════════════════════════════
-
     /**
      * Encrypt + write a serialized message (fire-and-forget: ping, ack).
      *
-     * @return int The client msg_id assigned to this frame.
+     * @return int
      */
     private function sendEncrypted(string $messageData, bool $contentRelated): int
     {
-        [$msgId, $packet] = $this->encryptFrame($messageData, $contentRelated);
-        $this->withWriteLock(fn () => $this->connection->send($packet));
+        [$msgId, $packet] = $this->codec->encrypt($messageData, $contentRelated);
+        $this->withWriteLock(fn() => $this->connection->send($packet));
 
         return $msgId;
-    }
-
-    /**
-     * Build the encrypted transport frame without sending it. Callers that need
-     * a reply register their pending entry between this and the write so the
-     * reader can never resolve before the call is tracked.
-     *
-     * @return array{0: int, 1: string} [msg_id, wire packet]
-     */
-    private function encryptFrame(string $messageData, bool $contentRelated): array
-    {
-        $authKey = $this->session->getAuthKey();
-        if (!$authKey) {
-            throw new SecurityException('No auth key available');
-        }
-
-        $msgId = $this->session->generateMessageId();
-        $seqNo = $this->session->getSeqNo($contentRelated);
-
-        // salt(8) + session_id(8) + msg_id(8) + seq_no(4) + length(4) + data
-        $innerData = $this->session->getServerSalt()
-            . $this->session->getSessionId()
-            . pack('P', $msgId)
-            . pack('V', $seqNo)
-            . pack('V', strlen($messageData))
-            . $messageData;
-
-        // Pad to a 16-byte boundary with 12..1024 random bytes.
-        $paddingLength = 16 - (strlen($innerData) % 16);
-        if ($paddingLength < 12) {
-            $paddingLength += 16;
-        }
-        $innerData .= $this->crypto->randomBytes($paddingLength);
-
-        $msgKey = $this->crypto->calculateMsgKey($authKey, $innerData, true);
-        $kdf    = $this->crypto->kdf($authKey, $msgKey, true);
-        $encrypted = $this->crypto->aesIgeEncrypt($innerData, $kdf['aes_key'], $kdf['aes_iv']);
-
-        $authKeyId = $this->crypto->calculateAuthKeyId($authKey);
-
-        return [$msgId, $this->transport->wrap($authKeyId . $msgKey . $encrypted)];
     }
 
     /**
@@ -425,10 +332,6 @@ final class MessagePump
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Reader coroutine — the ONLY socket reader
-    // ════════════════════════════════════════════════════════════════════
-
     private function readLoop(): void
     {
         while ($this->running) {
@@ -436,7 +339,7 @@ final class MessagePump
                 $length = $this->transport->readLength($this->connection);
                 $packet = $this->connection->receive($length);
                 if ($packet === null) {
-                    continue; // read timeout — loop again
+                    continue; //
                 }
 
                 $data = $this->transport->unwrap($packet);
@@ -471,7 +374,7 @@ final class MessagePump
             return;
         }
 
-        [$msgId, $body] = $this->decryptFrame($data);
+        [$msgId, $body] = $this->codec->decrypt($data);
         if ($body === null) {
             return; // stale session / dropped / failed checks
         }
@@ -479,95 +382,6 @@ final class MessagePump
         $this->pendingAcks[] = $msgId;
         $this->dispatch($msgId, $body);
     }
-
-    /**
-     * Verify + decrypt an encrypted frame, returning [server_msg_id, body] or
-     * [_, null] when the frame must be silently dropped.
-     *
-     * @return array{0: int, 1: string|null}
-     */
-    private function decryptFrame(string $data): array
-    {
-        $authKey = $this->session->getAuthKey();
-        if (!$authKey) {
-            throw new SecurityException('No auth key for decryption');
-        }
-
-        if (substr($data, 0, 8) !== $this->crypto->calculateAuthKeyId($authKey)) {
-            throw new SecurityException('Auth key ID mismatch');
-        }
-
-        $msgKey        = substr($data, 8, 16);
-        $encryptedData = substr($data, 24);
-
-        $kdf       = $this->crypto->kdf($authKey, $msgKey, false);
-        $decrypted = $this->crypto->aesIgeDecrypt($encryptedData, $kdf['aes_key'], $kdf['aes_iv']);
-
-        // msg_key must be SHA256-derived from the plaintext we just produced.
-        if ($msgKey !== $this->crypto->calculateMsgKey($authKey, $decrypted, false)) {
-            throw new SecurityException('Message key verification failed');
-        }
-
-        // salt(8) + session_id(8) + msg_id(8) + seq_no(4) + length(4) + body
-        $sessionId = substr($decrypted, 8, 8);
-        $msgId     = unpack('P', substr($decrypted, 16, 8))[1];
-        $length    = unpack('V', substr($decrypted, 28, 4))[1];
-
-        $decryptedLen = strlen($decrypted);
-        if ($length < 0 || $length > $decryptedLen - 32) {
-            throw new SecurityException('Invalid inner message length');
-        }
-        $padding = $decryptedLen - 32 - $length;
-        if ($padding < 12 || $padding > 1024) {
-            throw new SecurityException('Invalid padding length');
-        }
-
-        if ($sessionId !== $this->session->getSessionId()) {
-            $this->logger?->warning('Pump ignoring message with stale session ID');
-            return [$msgId, null];
-        }
-
-        $reason = $this->checkServerMsgId($msgId);
-        if ($reason !== null) {
-            $this->logger?->warning("Pump dropping server message {$msgId}: {$reason}");
-            return [$msgId, null];
-        }
-
-        return [$msgId, substr($decrypted, 32, $length)];
-    }
-
-    /**
-     * Validate + record an incoming server msg_id (odd, in time window, not a
-     * replay). Returns a reason string when the frame must be dropped.
-     */
-    private function checkServerMsgId(int $msgId): ?string
-    {
-        if (($msgId & 1) === 0) {
-            return 'msg_id is not odd';
-        }
-
-        $msgTime = ($msgId >> 32) & 0xFFFFFFFF;
-        $now     = time() + $this->session->getTimeDelta();
-        if ($msgTime > $now + 30 || $msgTime < $now - 300) {
-            return 'timestamp out of window (drift ' . ($msgTime - $now) . 's)';
-        }
-
-        if (isset($this->seenMsgIds[$msgId])) {
-            return 'duplicate msg_id (replay)';
-        }
-
-        $this->seenMsgIds[$msgId] = true;
-        if (count($this->seenMsgIds) > self::SEEN_MSG_ID_LIMIT) {
-            ksort($this->seenMsgIds);
-            $this->seenMsgIds = array_slice($this->seenMsgIds, -self::SEEN_MSG_ID_LIMIT, null, true);
-        }
-
-        return null;
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Routing by constructor
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Dispatch a decrypted message body by its TL constructor.
@@ -581,29 +395,29 @@ final class MessagePump
         $constructorId = unpack('V', substr($body, 0, 4))[1];
 
         match ($constructorId) {
-            self::GZIP_PACKED          => $this->dispatch($msgId, $this->gunzip($this->readTLBytes($body, 4))),
-            self::MSG_CONTAINER        => $this->handleContainer($body),
-            self::RPC_RESULT           => $this->handleRpcResult($body),
-            self::MSGS_ACK             => $this->handleMsgsAck($body),
+            self::GZIP_PACKED => $this->dispatch($msgId, FrameCodec::gunzip(FrameCodec::readTLBytes($body, 4))),
+            self::MSG_CONTAINER => $this->handleContainer($body),
+            self::RPC_RESULT => $this->handleRpcResult($body),
+            self::MSGS_ACK => $this->handleMsgsAck($body),
             self::BAD_MSG_NOTIFICATION,
-            self::BAD_SERVER_SALT      => $this->handleBadMsg($body),
-            self::NEW_SESSION_CREATED  => $this->handleNewSession($body),
-            self::PONG                 => $this->handlePong($body),
-            self::FUTURE_SALTS         => $this->handleFutureSalts($body),
+            self::BAD_SERVER_SALT => $this->handleBadMsg($body),
+            self::NEW_SESSION_CREATED => $this->handleNewSession($body),
+            self::PONG => $this->handlePong($body),
+            self::FUTURE_SALTS => $this->handleFutureSalts($body),
             self::MSGS_STATE_REQ,
             self::MSG_DETAILED_INFO,
-            self::MSG_NEW_DETAILED_INFO => null, // service info — ignored for now
-            default                    => $this->handleUpdateOrUnknown($body),
+            self::MSG_NEW_DETAILED_INFO => null,
+            default => $this->handleUpdateOrUnknown($body),
         };
     }
 
     /**
-     * msg_container#73f1f8dc — unwrap and route each inner message.
+     * msg_container#73f1f8dc - unwrap and route each inner message.
      */
     private function handleContainer(string $data): void
     {
-        $offset  = 4;
-        $count   = unpack('V', substr($data, $offset, 4))[1];
+        $offset = 4;
+        $count = unpack('V', substr($data, $offset, 4))[1];
         $offset += 4;
         $dataLen = strlen($data);
 
@@ -611,7 +425,7 @@ final class MessagePump
             if ($offset + 16 > $dataLen) {
                 break;
             }
-            $msgId   = unpack('P', substr($data, $offset, 8))[1];
+            $msgId = unpack('P', substr($data, $offset, 8))[1];
             $offset += 8;
             $offset += 4; // seqno (unused)
             $bodyLen = unpack('V', substr($data, $offset, 4))[1];
@@ -620,7 +434,7 @@ final class MessagePump
             if ($offset + $bodyLen > $dataLen) {
                 $bodyLen = $dataLen - $offset;
             }
-            $body    = substr($data, $offset, $bodyLen);
+            $body = substr($data, $offset, $bodyLen);
             $offset += $bodyLen;
 
             $this->pendingAcks[] = $msgId;
@@ -633,16 +447,16 @@ final class MessagePump
     }
 
     /**
-     * rpc_result#f35c6d01 — resolve the waiting invoke() for req_msg_id.
+     * rpc_result#f35c6d01 - resolve the waiting invoke() for req_msg_id.
      */
     private function handleRpcResult(string $data): void
     {
-        $reqMsgId   = unpack('P', substr($data, 4, 8))[1];
+        $reqMsgId = unpack('P', substr($data, 4, 8))[1];
         $resultData = substr($data, 12);
 
         $constructorId = unpack('V', substr($resultData, 0, 4))[1];
         if ($constructorId === self::GZIP_PACKED) {
-            $resultData    = $this->gunzip($this->readTLBytes($resultData, 4));
+            $resultData = FrameCodec::gunzip(FrameCodec::readTLBytes($resultData, 4));
             $constructorId = unpack('V', substr($resultData, 0, 4))[1];
         }
 
@@ -667,14 +481,14 @@ final class MessagePump
     {
         $call = $this->pending[$reqMsgId] ?? null;
         if ($call === null) {
-            return; // late/duplicate response — nothing waiting
+            return; // late/duplicate response - nothing waiting
         }
         unset($this->pending[$reqMsgId]);
         $call->channel->push($boxed);
     }
 
     /**
-     * msgs_ack — mark matched calls acknowledged (their rpc_result still
+     * msgs_ack - mark matched calls acknowledged (their rpc_result still
      * resolves the channel separately).
      */
     private function handleMsgsAck(string $data): void
@@ -694,15 +508,15 @@ final class MessagePump
      */
     private function handleBadMsg(string $data): void
     {
-        $badMsg    = $this->serializer->deserialize($data);
+        $badMsg = $this->serializer->deserialize($data);
         $errorCode = $badMsg['error_code'] ?? 0;
-        $badMsgId  = $badMsg['bad_msg_id'] ?? 0;
+        $badMsgId = $badMsg['bad_msg_id'] ?? 0;
 
         if (isset($badMsg['new_server_salt'])) {
             $this->session->setServerSalt(pack('P', $badMsg['new_server_salt']));
         }
 
-        // 48 = incorrect server salt → resend with corrected salt.
+        // 48 = incorrect server salt -> resend with corrected salt.
         if ($errorCode === 48) {
             $this->resend($badMsgId);
             return;
@@ -725,13 +539,13 @@ final class MessagePump
         }
         unset($this->pending[$oldMsgId]);
 
-        [$newMsgId, $packet] = $this->encryptFrame($call->payload, $call->contentRelated);
+        [$newMsgId, $packet] = $this->codec->encrypt($call->payload, $call->contentRelated);
         $this->pending[$newMsgId] = $call;
-        $this->withWriteLock(fn () => $this->connection->send($packet));
+        $this->withWriteLock(fn() => $this->connection->send($packet));
     }
 
     /**
-     * new_session_created — adopt the server salt for the new session.
+     * new_session_created - adopt the server salt for the new session.
      */
     private function handleNewSession(string $data): void
     {
@@ -742,7 +556,7 @@ final class MessagePump
     }
 
     /**
-     * pong#347773c5 — resolves the ping it answers (pong.msg_id is the ping's
+     * pong#347773c5 - resolves the ping it answers (pong.msg_id is the ping's
      * client msg_id). Keep-alive pings carry no pending entry, so those no-op.
      */
     private function handlePong(string $data): void
@@ -754,7 +568,7 @@ final class MessagePump
     }
 
     /**
-     * future_salts#ae500895 — resolves the get_future_salts request it answers.
+     * future_salts#ae500895 - resolves the get_future_salts request it answers.
      */
     private function handleFutureSalts(string $data): void
     {
@@ -765,7 +579,7 @@ final class MessagePump
     }
 
     /**
-     * Anything not a service message is an update container — hand it off to the
+     * Anything not a service message is an update container - hand it off to the
      * update sink without ever blocking the reader.
      */
     private function handleUpdateOrUnknown(string $body): void
@@ -786,23 +600,19 @@ final class MessagePump
         }
 
         static $updateTypes = [
-            'updates'                => true,
-            'updatesCombined'        => true,
-            'updateShort'            => true,
-            'updateShortMessage'     => true,
+            'updates' => true,
+            'updatesCombined' => true,
+            'updateShort' => true,
+            'updateShortMessage' => true,
             'updateShortChatMessage' => true,
             'updateShortSentMessage' => true,
-            'updatesTooLong'         => true,
+            'updatesTooLong' => true,
         ];
 
         if (isset($updateTypes[$decoded['_']])) {
             ($this->updateHandler)($decoded);
         }
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Acks / keep-alive / reconnect
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Flush accumulated server msg_ids as a single msgs_ack.
@@ -813,7 +623,7 @@ final class MessagePump
             return;
         }
 
-        $acks    = array_splice($this->pendingAcks, 0, 8192);
+        $acks = array_splice($this->pendingAcks, 0, 8192);
         $payload = $this->serializer->serialize(['_' => 'msgs_ack', 'msg_ids' => $acks]);
 
         try {
@@ -826,7 +636,7 @@ final class MessagePump
     }
 
     /**
-     * Keep-alive: ping_delay_disconnect every pingInterval. Fire-and-forget —
+     * Keep-alive: ping_delay_disconnect every pingInterval. Fire-and-forget -
      * the pong is routed (and ignored) by the reader.
      */
     private function sendPing(): void
@@ -836,9 +646,9 @@ final class MessagePump
         }
         try {
             $payload = $this->serializer->serialize([
-                '_'                => 'ping_delay_disconnect',
-                'ping_id'          => random_int(PHP_INT_MIN, PHP_INT_MAX),
-                'disconnect_delay' => (int) ($this->pingInterval * 2.5),
+                '_' => 'ping_delay_disconnect',
+                'ping_id' => random_int(PHP_INT_MIN, PHP_INT_MAX),
+                'disconnect_delay' => (int)($this->pingInterval * 2.5),
             ]);
             $this->sendEncrypted($payload, false);
         } catch (\Throwable $e) {
@@ -853,7 +663,7 @@ final class MessagePump
     private function reconnect(): void
     {
         if ($this->reconnector === null) {
-            $this->logger?->error('Pump connection lost and no reconnector set — stopping');
+            $this->logger?->error('Pump connection lost and no reconnector set - stopping');
             $this->running = false;
             return;
         }
@@ -882,46 +692,10 @@ final class MessagePump
             }
         }
 
-        $this->logger?->error('Pump failed to reconnect after 5 attempts — stopping');
+        $this->logger?->error('Pump failed to reconnect after 5 attempts - stopping');
         $this->running = false;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Helpers
-    // ════════════════════════════════════════════════════════════════════
-
-    /**
-     * Decompress a gzip_packed payload, guarding against bad data and bombs.
-     */
-    private function gunzip(string $packedData): string
-    {
-        $unpacked = @gzdecode($packedData, self::MAX_GZIP_OUTPUT);
-        if ($unpacked === false) {
-            throw new MTProtoException('Failed to gzip-decode packed message');
-        }
-        if (strlen($unpacked) >= self::MAX_GZIP_OUTPUT) {
-            throw new SecurityException('Decompressed payload exceeds maximum allowed size');
-        }
-        return $unpacked;
-    }
-
-    /**
-     * Read a TL-encoded bytes value at $offset and return its raw content.
-     */
-    private function readTLBytes(string $data, int $offset): string
-    {
-        $firstByte = ord($data[$offset]);
-        $offset++;
-
-        if ($firstByte === 254) {
-            $length  = unpack('V', substr($data, $offset, 3) . "\x00")[1];
-            $offset += 3;
-        } else {
-            $length = $firstByte;
-        }
-
-        return substr($data, $offset, $length);
-    }
 }
 
 /**
@@ -931,9 +705,11 @@ final class PendingCall
 {
     public function __construct(
         public readonly Channel $channel,
-        public readonly string $payload,
-        public readonly bool $contentRelated,
-        public readonly string $method,
-        public bool $acked = false,
-    ) {}
+        public readonly string  $payload,
+        public readonly bool    $contentRelated,
+        public readonly string  $method,
+        public bool             $acked = false,
+    )
+    {
+    }
 }

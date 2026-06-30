@@ -10,23 +10,11 @@ use LaraGram\Listening\Listen;
 use LaraGram\Listening\ListenCollection;
 use LaraGram\Listening\Listener;
 use LaraGram\Listening\Pipeline;
+use LaraGram\MTProto\Core\Client as MTProtoClient;
 use LaraGram\MTProto\Foundation\ClientHandlerTrait;
 use LaraGram\MTProto\Foundation\ClientType;
+use LaraGram\Support\Str;
 
-/**
- * Client Listener — routing/dispatch for MTProto updates.
- *
- * Since the framework Listening engine now reads the matchable value from the
- * request via the `ProvidesListenContext` contract (which `ClientRequest`
- * implements), this listener no longer needs to re-implement matching/binding.
- * It is a thin subclass of the framework `Listener` that:
- *   - swaps the Bot-API verbs/handlers for native MTProto ones (ClientHandlerTrait),
- *   - registers fallbacks against MTProto verbs (not Bot-API verbs),
- *   - strips the per-listen `connection` action (which would reach for the
- *     Bot-API `app('request')` that does not exist in the MTProto lifecycle).
- *
- * Everything else — find/match/bind/run, middleware, events — is inherited.
- */
 class ClientListener extends Listener
 {
     use ClientHandlerTrait;
@@ -48,7 +36,7 @@ class ClientListener extends Listener
      * Overrides the base implementation, which spreads the fallback across the
      * Bot-API verb table (Listener::$verbs).
      *
-     * @param  array|string|callable|null  $action
+     * @param array|string|callable|null $action
      * @return \LaraGram\Listening\Listen
      */
     public function fallback($action)
@@ -61,14 +49,68 @@ class ClientListener extends Listener
     }
 
     /**
+     * Register a listen — but ONLY when inside a Client group context.
+     *
+     * @param array|string $methods
+     * @param string $pattern
+     * @param array|string|callable|null $action
+     * @return \LaraGram\Listening\Listen
+     */
+    public function addListen($methods, $pattern, $action)
+    {
+        if (!$this->hasGroupStack()) {
+            return $this->createListen($methods, $pattern, $action);
+        }
+
+        return parent::addListen($methods, $pattern, $action);
+    }
+
+    /**
+     * Resolve the live MTProto Client for a given session. the entry point for
+     * sending *outside* an update handler, or to a non-originating account:
+     */
+    public function session(string $name = 'default'): MTProtoClient
+    {
+        return $this->container->make('mtproto.manager')->client($name);
+    }
+
+    /**
+     * Dynamically handle calls into the listener.
+     *
+     * @param string $method
+     * @param array $parameters
+     * @return mixed
+     */
+    public function __call($method, $parameters)
+    {
+        if (static::hasMacro($method)) {
+            return $this->macroCall($method, $parameters);
+        }
+
+        if ($method === 'middleware') {
+            return (new ClientListenRegistrar($this))->attribute(
+                $method, is_array($parameters[0]) ? $parameters[0] : $parameters
+            );
+        }
+
+        if (in_array($method, ['forSessions', 'forConnections'], true)) {
+            return (new ClientListenRegistrar($this))->{$method}(...$parameters);
+        }
+
+        if ($method !== 'where' && Str::startsWith($method, 'where')) {
+            return (new ClientListenRegistrar($this))->{$method}(...$parameters);
+        }
+
+        return (new ClientListenRegistrar($this))->attribute(
+            $method, array_key_exists(0, $parameters) ? $parameters[0] : true
+        );
+    }
+
+    /**
      * Run the given listen within a Stack "onion" instance.
      *
-     * Identical to the parent, except it removes the `connection` action — that
-     * action triggers `app('request')` in Listen::run(), which is a Bot-API
-     * concept absent from the MTProto Client lifecycle.
-     *
-     * @param  \LaraGram\Listening\Listen  $listen
-     * @param  \LaraGram\Listening\Contracts\ProvidesListenContext  $request
+     * @param \LaraGram\Listening\Listen $listen
+     * @param \LaraGram\Listening\Contracts\ProvidesListenContext $request
      * @return mixed
      */
     protected function runListenWithinStack(Listen $listen, $request)
@@ -83,7 +125,7 @@ class ClientListener extends Listener
         return (new Pipeline($this->container))
             ->send($request)
             ->through($middleware)
-            ->then(fn ($request) => $this->prepareResponse(
+            ->then(fn($request) => $this->prepareResponse(
                 $request, $listen->run()
             ));
     }

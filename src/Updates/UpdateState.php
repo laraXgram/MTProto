@@ -5,69 +5,103 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Updates;
 
 use LaraGram\MTProto\Contracts\SessionInterface;
+use LaraGram\MTProto\Contracts\Store;
+use LaraGram\MTProto\Store\FileStore;
 
-/**
- * Persistent update state (pts, qts, seq, date) for common and per-channel boxes.
- *
- * Stored alongside the session file as `<session>_updates.json`.
- * Loaded on startup, saved after every significant state change.
- */
 class UpdateState
 {
     /** Common message-box state */
-    private int $pts  = 0;
-    private int $qts  = 0;
+    private int $pts = 0;
+    private int $qts = 0;
     private int $date = 0;
-    private int $seq  = 0;
+    private int $seq = 0;
 
-    /** Per-channel pts: channel_id → pts */
+    /** Per-channel pts: channel_id -> pts */
     private array $channelPts = [];
 
     /** Whether this state has been initialised from the server */
     private bool $initialised = false;
 
-    /** File path for persistence */
-    private string $filePath;
+    /** Backing blob store and the key this state lives under. */
+    private Store $store;
+    private string $storeKey;
 
-    private \LaraGram\Filesystem\Filesystem $files;
-
-    public function __construct(string $sessionDir, string $sessionName, ?\LaraGram\Filesystem\Filesystem $files = null)
+    /**
+     * @param Store|null $store
+     */
+    public function __construct(
+        string                           $sessionDir,
+        string                           $sessionName,
+        ?\LaraGram\Filesystem\Filesystem $files = null,
+        ?Store                           $store = null,
+    )
     {
-        $this->files = $files ?? new \LaraGram\Filesystem\Filesystem();
-        $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $sessionName);
-        $this->filePath = rtrim($sessionDir, '/') . '/' . $safeName . '_updates.json';
+        $this->store = $store ?? new FileStore($sessionDir, '_updates.json', $files);
+        $this->storeKey = $sessionName;
         $this->load();
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Getters / Setters
-    // ════════════════════════════════════════════════════════════════════
+    public function getPts(): int
+    {
+        return $this->pts;
+    }
 
-    public function getPts(): int  { return $this->pts; }
-    public function getQts(): int  { return $this->qts; }
-    public function getDate(): int { return $this->date; }
-    public function getSeq(): int  { return $this->seq; }
-    public function isInitialised(): bool { return $this->initialised; }
+    public function getQts(): int
+    {
+        return $this->qts;
+    }
 
-    public function setPts(int $pts): void   { $this->pts = $pts; }
-    public function setQts(int $qts): void   { $this->qts = $qts; }
-    public function setDate(int $date): void { $this->date = $date; }
-    public function setSeq(int $seq): void   { $this->seq = $seq; }
-    public function setInitialised(bool $v = true): void { $this->initialised = $v; }
+    public function getDate(): int
+    {
+        return $this->date;
+    }
+
+    public function getSeq(): int
+    {
+        return $this->seq;
+    }
+
+    public function isInitialised(): bool
+    {
+        return $this->initialised;
+    }
+
+    public function setPts(int $pts): void
+    {
+        $this->pts = $pts;
+    }
+
+    public function setQts(int $qts): void
+    {
+        $this->qts = $qts;
+    }
+
+    public function setDate(int $date): void
+    {
+        $this->date = $date;
+    }
+
+    public function setSeq(int $seq): void
+    {
+        $this->seq = $seq;
+    }
+
+    public function setInitialised(bool $v = true): void
+    {
+        $this->initialised = $v;
+    }
 
     /**
      * Bulk-set common state from an updates.State response.
      */
     public function applyState(array $state): void
     {
-        $this->pts  = $state['pts']  ?? $this->pts;
-        $this->qts  = $state['qts']  ?? $this->qts;
+        $this->pts = $state['pts'] ?? $this->pts;
+        $this->qts = $state['qts'] ?? $this->qts;
         $this->date = $state['date'] ?? $this->date;
-        $this->seq  = $state['seq']  ?? $this->seq;
+        $this->seq = $state['seq'] ?? $this->seq;
         $this->initialised = true;
     }
-
-    // ── Channel pts ────────────────────────────────────────────────────
 
     public function getChannelPts(int $channelId): int
     {
@@ -84,19 +118,15 @@ class UpdateState
         return $this->channelPts;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Gap detection helpers
-    // ════════════════════════════════════════════════════════════════════
-
     /**
      * Check pts gap for common message box.
      *
-     * @return int  0 = no gap (apply), <0 = duplicate (skip), >0 = gap size
+     * @return int
      */
     public function checkPtsGap(int $newPts, int $ptsCount): int
     {
         if ($this->pts === 0) {
-            return 0; // First update, no gap
+            return 0;
         }
         return ($this->pts + $ptsCount) - $newPts;
     }
@@ -115,7 +145,7 @@ class UpdateState
     /**
      * Check seq gap for container ordering.
      *
-     * @return int  0 = expected, <0 = duplicate, >0 = gap
+     * @return int
      */
     public function checkSeqGap(int $newSeq): int
     {
@@ -127,6 +157,8 @@ class UpdateState
 
     /**
      * Check channel pts gap.
+     *
+     * @return int
      */
     public function checkChannelPtsGap(int $channelId, int $newPts, int $ptsCount): int
     {
@@ -137,35 +169,25 @@ class UpdateState
         return ($current + $ptsCount) - $newPts;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Persistence
-    // ════════════════════════════════════════════════════════════════════
-
     public function save(): void
     {
         $data = [
-            'pts'         => $this->pts,
-            'qts'         => $this->qts,
-            'date'        => $this->date,
-            'seq'         => $this->seq,
+            'pts' => $this->pts,
+            'qts' => $this->qts,
+            'date' => $this->date,
+            'seq' => $this->seq,
             'initialised' => $this->initialised,
             'channel_pts' => $this->channelPts,
-            'updated_at'  => time(),
+            'updated_at' => time(),
         ];
 
-        $this->files->ensureDirectoryExists(dirname($this->filePath), 0700);
-        $this->files->replace($this->filePath, json_encode($data, JSON_PRETTY_PRINT));
+        $this->store->put($this->storeKey, json_encode($data, JSON_PRETTY_PRINT));
     }
 
     public function load(): void
     {
-        if (!$this->files->exists($this->filePath)) {
-            return;
-        }
-
-        try {
-            $json = $this->files->get($this->filePath);
-        } catch (\Throwable) {
+        $json = $this->store->get($this->storeKey);
+        if ($json === null) {
             return;
         }
 
@@ -174,12 +196,12 @@ class UpdateState
             return;
         }
 
-        $this->pts         = $data['pts']  ?? 0;
-        $this->qts         = $data['qts']  ?? 0;
-        $this->date        = $data['date'] ?? 0;
-        $this->seq         = $data['seq']  ?? 0;
+        $this->pts = $data['pts'] ?? 0;
+        $this->qts = $data['qts'] ?? 0;
+        $this->date = $data['date'] ?? 0;
+        $this->seq = $data['seq'] ?? 0;
         $this->initialised = $data['initialised'] ?? false;
-        $this->channelPts  = $data['channel_pts'] ?? [];
+        $this->channelPts = $data['channel_pts'] ?? [];
     }
 
     /**
@@ -188,10 +210,10 @@ class UpdateState
     public function toArray(): array
     {
         return [
-            'pts'  => $this->pts,
-            'qts'  => $this->qts,
+            'pts' => $this->pts,
+            'qts' => $this->qts,
             'date' => $this->date,
-            'seq'  => $this->seq,
+            'seq' => $this->seq,
         ];
     }
 }

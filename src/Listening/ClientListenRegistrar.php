@@ -6,11 +6,20 @@ namespace LaraGram\MTProto\Listening;
 
 use LaraGram\Listening\ListenRegistrar;
 
-/**
- * Client Listen Registrar — fluent proxy for the ClientListener.
- */
 class ClientListenRegistrar extends ListenRegistrar
 {
+    /**
+     * Scope the following listens to one or more sessions (accounts).
+     *
+     * @param  array|string  $sessions
+     * @return $this
+     */
+    public function forSessions(array|string $sessions)
+    {
+        return $this->attribute('for_connections', (array) $sessions);
+    }
+
+
     /**
      * The methods to dynamically pass through to the listener.
      *

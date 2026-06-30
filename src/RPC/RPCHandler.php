@@ -14,16 +14,6 @@ use LaraGram\MTProto\TL\TLSerializer;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\Exceptions\SecurityException;
 
-/**
- * RPC Handler
- * 
- * Manages MTProto message exchange including:
- * - Message construction and serialization
- * - Encryption/decryption
- * - Message acknowledgement
- * - Error handling
- * - Salt updates
- */
 final class RPCHandler
 {
     private const GZIP_PACKED = 0x3072cfa1;
@@ -39,22 +29,14 @@ final class RPCHandler
 
     private TLSerializer $serializer;
 
+    /** Shared frame crypto. */
+    private FrameCodec $codec;
+
     /** @var array<int, PendingMessage> Pending RPC calls */
     private array $pendingMessages = [];
 
     /** @var array<int> Message IDs to acknowledge */
     private array $pendingAcks = [];
-
-    /**
-     * Sliding window of server msg_ids already seen, used to drop replays.
-     * Keys are msg_ids; the array is trimmed once it exceeds the cap.
-     *
-     * @var array<int, true>
-     */
-    private array $seenMsgIds = [];
-
-    /** @var int Maximum number of server msg_ids retained for replay detection */
-    private const SEEN_MSG_ID_LIMIT = 1024;
 
     /** @var int Current layer (overridden by Client::LAYER; must match parsed schema/types) */
     private int $layer = 214;
@@ -89,15 +71,17 @@ final class RPCHandler
 
     public function __construct(
         private readonly ConnectionInterface $connection,
-        private readonly TransportInterface $transport,
-        private readonly CryptoInterface $crypto,
-        private readonly SessionInterface $session,
-        private readonly TLParser $parser,
-        int $apiId = 0,
-        string $apiHash = '',
-        ?LoggerInterface $logger = null,
-    ) {
+        private readonly TransportInterface  $transport,
+        private readonly CryptoInterface     $crypto,
+        private readonly SessionInterface    $session,
+        private readonly TLParser            $parser,
+        int                                  $apiId = 0,
+        string                               $apiHash = '',
+        ?LoggerInterface                     $logger = null,
+    )
+    {
         $this->serializer = new TLSerializer($parser);
+        $this->codec = new FrameCodec($crypto, $session, $transport, $logger);
         $this->apiId = $apiId;
         $this->apiHash = $apiHash;
         $this->logger = $logger;
@@ -114,10 +98,10 @@ final class RPCHandler
 
     /**
      * Register a callback to receive updates that arrive during
-     * blocking receiveResponse() calls.
-     *
-     * The UpdateLoop sets this so that updates are not lost when
-     * user code calls $client->sendMessage() etc. inside a handler.
+     * blocking receiveResponse() calls, so they are not lost when user code
+     * calls $client->sendMessage() etc. inside a handler. The pump path
+     * supersedes this; on the sync path it stays null (auth/login emits no
+     * updates) and the forwarding below is inert.
      *
      * @param callable(array): void $callback
      */
@@ -128,13 +112,7 @@ final class RPCHandler
 
     /**
      * Initialize the connection - MUST be called before any API calls.
-     * 
-     * This follows the correct Telegram protocol flow:
-     * 1. Send Ping (to establish connection)
-     * 2. Send InvokeWithLayer(InitConnection(help.getConfig))
-     * 
-     * After this, all subsequent calls are sent WITHOUT any wrapper.
-     * 
+     *
      * @return array help.getConfig response
      */
     public function initializeConnection(): array
@@ -143,10 +121,8 @@ final class RPCHandler
             return [];
         }
 
-        // Step 1: Send Ping first (like Pyrogram does)
         $this->ping();
 
-        // Step 2: Send InvokeWithLayer(InitConnection(help.getConfig))
         $getConfig = ['_' => 'help.getConfig'];
 
         $device = $this->deviceProfile ??= \LaraGram\MTProto\Core\DeviceProfile::preset(
@@ -199,18 +175,17 @@ final class RPCHandler
 
     /**
      * Send an RPC call and wait for response.
-     * 
+     *
      * Connection MUST be initialized first via initializeConnection().
      * All calls are sent directly without any wrapper.
-     * 
-     * @param string $method Method name (e.g., 'messages.sendMessage')
-     * @param array $params Method parameters
-     * @param bool $contentRelated Whether this is content-related
+     *
+     * @param string $method
+     * @param array $params
+     * @param bool $contentRelated
      * @return array Response
      */
     public function call(string $method, array $params = [], bool $contentRelated = true): array
     {
-        // Auto-initialize if not done yet
         if (!$this->initialized) {
             $this->initializeConnection();
         }
@@ -223,20 +198,17 @@ final class RPCHandler
      */
     private function callInternal(string $method, array $params, bool $contentRelated, int $maxRetries): array
     {
-        // Build the message
         $methodDef = $this->parser->getMethod($method);
         if (!$methodDef) {
             throw new MTProtoException("Unknown method: {$method}");
         }
 
         $message = array_merge(['_' => $method], $params);
-        
+
         $messageData = $this->serializer->serialize($message);
 
-        // Send encrypted message
         $msgId = $this->sendEncrypted($messageData, $contentRelated);
 
-        // Store pending message
         $this->pendingMessages[$msgId] = new PendingMessage(
             msgId: $msgId,
             method: $method,
@@ -244,10 +216,8 @@ final class RPCHandler
             sentAt: microtime(true),
         );
 
-        // Read response
         $response = $this->receiveResponse($msgId);
 
-        // Handle retry signals (bad_server_salt, etc.)
         if (isset($response['_retry']) && $maxRetries > 0) {
             $this->logger?->debug("Retrying {$method} (retries left: {$maxRetries})");
             return $this->callInternal($method, $params, $contentRelated, $maxRetries - 1);
@@ -258,10 +228,10 @@ final class RPCHandler
 
     /**
      * Invoke a TL method (alias for call).
-     * 
-     * @param string $method Method name
-     * @param array $params Method parameters
-     * @return array Response
+     *
+     * @param string $method
+     * @param array $params
+     * @return array
      */
     public function invoke(string $method, array $params = []): array
     {
@@ -274,7 +244,7 @@ final class RPCHandler
     public function ping(): int
     {
         $pingId = random_int(PHP_INT_MIN, PHP_INT_MAX);
-        
+
         $message = [
             '_' => 'ping',
             'ping_id' => $pingId,
@@ -285,7 +255,6 @@ final class RPCHandler
 
         $response = $this->receiveResponse($msgId);
 
-        // Handle retry signals (bad_server_salt, etc.)
         if (isset($response['_retry'])) {
             $this->logger?->debug('Retrying ping after salt update');
             $msgId = $this->sendEncrypted($messageData, false);
@@ -320,41 +289,7 @@ final class RPCHandler
      */
     public function sendEncrypted(string $messageData, bool $contentRelated): int
     {
-        $authKey = $this->session->getAuthKey();
-        if (!$authKey) {
-            throw new SecurityException('No auth key available');
-        }
-
-        $msgId = $this->session->generateMessageId();
-        $seqNo = $this->session->getSeqNo($contentRelated);
-
-        // Build inner message
-        // salt (8) + session_id (8) + msg_id (8) + seq_no (4) + message_len (4) + message_data + padding
-        $innerData = $this->session->getServerSalt()
-            . $this->session->getSessionId()
-            . pack('P', $msgId)
-            . pack('V', $seqNo)
-            . pack('V', strlen($messageData))
-            . $messageData;
-
-        // Add padding (12-1024 bytes, total length divisible by 16)
-        $paddingLength = 16 - (strlen($innerData) % 16);
-        if ($paddingLength < 12) {
-            $paddingLength += 16;
-        }
-        $innerData .= $this->crypto->randomBytes($paddingLength);
-
-        // Calculate msg_key and encrypt
-        $msgKey = $this->crypto->calculateMsgKey($authKey, $innerData, true);
-        $kdf = $this->crypto->kdf($authKey, $msgKey, true);
-        $encryptedData = $this->crypto->aesIgeEncrypt($innerData, $kdf['aes_key'], $kdf['aes_iv']);
-
-        // Build final message
-        $authKeyId = $this->crypto->calculateAuthKeyId($authKey);
-        $finalMessage = $authKeyId . $msgKey . $encryptedData;
-
-        // Wrap with transport and send
-        $packet = $this->transport->wrap($finalMessage);
+        [$msgId, $packet] = $this->codec->encrypt($messageData, $contentRelated);
         $this->connection->send($packet);
 
         return $msgId;
@@ -368,17 +303,13 @@ final class RPCHandler
         $startTime = microtime(true);
 
         while (microtime(true) - $startTime < $timeout) {
-            // Read packet
             $lengthData = $this->transport->readLength($this->connection);
             $packet = $this->connection->receive($lengthData);
             $data = $this->transport->unwrap($packet);
 
-            // Process the message
             $result = $this->processReceivedData($data);
 
-            // Check if this is the response we're waiting for
             if (isset($result['msg_id']) && $result['msg_id'] === $expectedMsgId) {
-                // Check for retry signal (bad_server_salt with updated salt)
                 if (isset($result['_retry'])) {
                     return $result;
                 }
@@ -386,24 +317,21 @@ final class RPCHandler
                 return $result['result'] ?? $result;
             }
 
-            // Check for result in container
             if (isset($result['results'])) {
                 $found = false;
                 foreach ($result['results'] as $r) {
                     if (isset($r['msg_id']) && $r['msg_id'] === $expectedMsgId) {
-                        // Re-throw stored exceptions (RPC errors, bad_msg, etc.)
                         if (isset($r['_exception'])) {
                             unset($this->pendingMessages[$expectedMsgId]);
                             throw $r['_exception'];
                         }
-                        // Check for retry signal
+
                         if (isset($r['_retry'])) {
                             return $r;
                         }
                         unset($this->pendingMessages[$expectedMsgId]);
                         $found = $r['result'] ?? $r;
                     } elseif ($this->updateFeedCallback !== null) {
-                        // Forward any updates found in the container
                         $inner = $r['result'] ?? $r;
                         $this->forwardIfUpdate($inner);
                     }
@@ -412,14 +340,12 @@ final class RPCHandler
                     return $found;
                 }
             } else {
-                // Single message that didn't match — forward if it's an update
                 if ($this->updateFeedCallback !== null) {
                     $inner = $result['result'] ?? $result;
                     $this->forwardIfUpdate($inner);
                 }
             }
 
-            // Send acks if needed
             $this->sendPendingAcks();
         }
 
@@ -431,13 +357,9 @@ final class RPCHandler
      */
     private function processReceivedData(string $data): array
     {
-        // Check if unencrypted (auth_key_id = 0)
         $authKeyId = substr($data, 0, 8);
 
         if ($authKeyId === str_repeat("\x00", 8)) {
-            // Only the auth-key handshake may use unencrypted frames. Once an
-            // auth key exists, accepting plaintext frames opens a downgrade/
-            // injection vector, so reject them.
             if ($this->session->getAuthKey() !== null) {
                 throw new SecurityException('Unencrypted message received after handshake');
             }
@@ -465,122 +387,19 @@ final class RPCHandler
     }
 
     /**
-     * Process encrypted message
+     * Process encrypted message.
      */
     private function processEncrypted(string $data): array
     {
-        $authKey = $this->session->getAuthKey();
-        if (!$authKey) {
-            throw new SecurityException('No auth key for decryption');
-        }
+        [$msgId, $messageData] = $this->codec->decrypt($data);
 
-        $expectedAuthKeyId = $this->crypto->calculateAuthKeyId($authKey);
-        $receivedAuthKeyId = substr($data, 0, 8);
-
-        if ($receivedAuthKeyId !== $expectedAuthKeyId) {
-            throw new SecurityException('Auth key ID mismatch');
-        }
-
-        $msgKey = substr($data, 8, 16);
-        $encryptedData = substr($data, 24);
-
-        // Decrypt
-        $kdf = $this->crypto->kdf($authKey, $msgKey, false);
-        $decrypted = $this->crypto->aesIgeDecrypt($encryptedData, $kdf['aes_key'], $kdf['aes_iv']);
-
-        // Verify msg_key
-        $expectedMsgKey = $this->crypto->calculateMsgKey($authKey, $decrypted, false);
-        if ($msgKey !== $expectedMsgKey) {
-            throw new SecurityException('Message key verification failed');
-        }
-
-        // Parse inner data
-        // salt (8) + session_id (8) + msg_id (8) + seq_no (4) + length (4) + data
-        $salt = substr($decrypted, 0, 8);
-        $sessionId = substr($decrypted, 8, 8);
-        $msgId = unpack('P', substr($decrypted, 16, 8))[1];
-        $seqNo = unpack('V', substr($decrypted, 24, 4))[1];
-        $length = unpack('V', substr($decrypted, 28, 4))[1];
-
-        // Validate the inner length field before trusting it. The plaintext is
-        // header(32) + message_data + padding(12..1024); a forged length could
-        // otherwise drive an OOB read or padding-oracle-style probing.
-        $decryptedLen = strlen($decrypted);
-        if ($length < 0 || $length > $decryptedLen - 32) {
-            throw new SecurityException('Invalid inner message length');
-        }
-        $padding = $decryptedLen - 32 - $length;
-        if ($padding < 12 || $padding > 1024) {
-            throw new SecurityException('Invalid padding length');
-        }
-
-        $messageData = substr($decrypted, 32, $length);
-
-        // Verify session — if session was regenerated, old replies may arrive
-        if ($sessionId !== $this->session->getSessionId()) {
-            $this->logger?->warning('Ignoring message with stale session ID');
-            return ['_' => 'stale_session'];
-        }
-
-        // Validate the server msg_id: must be odd (server messages are 1 or 3
-        // mod 4), within the allowed time window, and not a replay. Per spec a
-        // failing frame is *dropped* (not fatal) — throwing here would abort the
-        // RPC currently waiting in receiveResponse(), so we return a benign
-        // marker and let the read loop continue to the real response.
-        $reason = $this->checkServerMsgId($msgId);
-        if ($reason !== null) {
-            $this->logger?->warning("Dropping server message {$msgId}: {$reason}");
+        if ($messageData === null) {
             return ['_' => 'dropped_message'];
         }
 
-        // Add to pending acks
         $this->pendingAcks[] = $msgId;
 
-        // Parse and handle the message
         return $this->handleMessage($msgId, $messageData);
-    }
-
-    /**
-     * Check an incoming server msg_id and record it for replay detection.
-     *
-     * Server message identifiers are odd (1 or 3 mod 4). The high 32 bits are a
-     * unix timestamp; messages too far from the (delta-adjusted) local clock are
-     * rejected, and duplicates are dropped via a sliding window.
-     *
-     * @return string|null  null if the message is acceptable, otherwise a short
-     *                       reason the caller should log before dropping it.
-     */
-    private function checkServerMsgId(int $msgId): ?string
-    {
-        // Server msg_ids must be odd; even ids only originate from the client.
-        if (($msgId & 1) === 0) {
-            return 'msg_id is not odd';
-        }
-
-        // High 32 bits encode the server's unix time (msg_id = time << 32 + ...).
-        $msgTime = ($msgId >> 32) & 0xFFFFFFFF;
-        $now = time() + $this->session->getTimeDelta();
-
-        // Per spec: reject ids more than 30s in the future or 300s in the past.
-        if ($msgTime > $now + 30 || $msgTime < $now - 300) {
-            return 'timestamp out of window (drift ' . ($msgTime - $now) . 's)';
-        }
-
-        // Replay protection: a msg_id already processed is a duplicate.
-        if (isset($this->seenMsgIds[$msgId])) {
-            return 'duplicate msg_id (replay)';
-        }
-
-        $this->seenMsgIds[$msgId] = true;
-
-        // Trim the window. Keys are monotonically increasing msg_ids, so drop
-        // the oldest (smallest) ones once over the cap.
-        if (count($this->seenMsgIds) > self::SEEN_MSG_ID_LIMIT) {
-            ksort($this->seenMsgIds);
-            $this->seenMsgIds = array_slice($this->seenMsgIds, -self::SEEN_MSG_ID_LIMIT, null, true);
-        }
-
-        return null;
     }
 
     /**
@@ -634,109 +453,59 @@ final class RPCHandler
     private function handleGzipPacked(int $msgId, string $data): array
     {
         // Skip constructor ID (4 bytes), then read TL bytes (packed_data)
-        $packedData = $this->readTLBytes($data, 4);
-        $unpacked = $this->gzdecodeChecked($packedData);
+        $packedData = FrameCodec::readTLBytes($data, 4);
+        $unpacked = FrameCodec::gunzip($packedData);
 
         return $this->handleMessage($msgId, $unpacked);
     }
 
-    /** @var int Max allowed size of gzip-decompressed payloads (16 MiB) to guard against zip bombs */
-    private const MAX_GZIP_OUTPUT = 16 * 1024 * 1024;
-
-    /**
-     * Decompress a gzip_packed payload, guarding against corrupt data and
-     * decompression bombs. gzdecode() returns false on bad input, which would
-     * otherwise reach handleMessage() and trigger a type error.
-     */
-    private function gzdecodeChecked(string $packedData): string
-    {
-        $unpacked = @gzdecode($packedData, self::MAX_GZIP_OUTPUT);
-
-        if ($unpacked === false) {
-            throw new MTProtoException('Failed to gzip-decode packed message');
-        }
-
-        if (strlen($unpacked) >= self::MAX_GZIP_OUTPUT) {
-            throw new SecurityException('Decompressed payload exceeds maximum allowed size');
-        }
-
-        return $unpacked;
-    }
-
-    /**
-     * Read a TL-encoded bytes/string from binary data at given offset.
-     * Returns the raw bytes value.
-     */
-    private function readTLBytes(string $data, int $offset): string
-    {
-        $firstByte = ord($data[$offset]);
-        $offset++;
-
-        if ($firstByte === 254) {
-            // Long string: 3 bytes length
-            $lengthBytes = substr($data, $offset, 3) . "\x00";
-            $length = unpack('V', $lengthBytes)[1];
-            $offset += 3;
-        } else {
-            $length = $firstByte;
-        }
-
-        return substr($data, $offset, $length);
-    }
-
     /**
      * Handle message container
-     * 
+     *
      * msg_container#73f1f8dc messages:vector<%Message> = MessageContainer;
      * message msg_id:long seqno:int bytes:int body:Object = Message;
      */
     private function handleContainer(string $data): array
     {
-        // Skip constructor ID (4 bytes)
         $offset = 4;
-        
-        // Read message count
+
         $count = unpack('V', substr($data, $offset, 4))[1];
         $offset += 4;
-        
+
         $results = [];
         $dataLen = strlen($data);
-        
+
         for ($i = 0; $i < $count; $i++) {
             // Read message: msg_id (8) + seqno (4) + bytes (4) + body
             if ($offset + 16 > $dataLen) {
-                // Not enough data for header
                 break;
             }
-            
+
             $msgId = unpack('P', substr($data, $offset, 8))[1];
             $offset += 8;
-            
+
             $seqNo = unpack('V', substr($data, $offset, 4))[1];
             $offset += 4;
-            
+
             $bodyLen = unpack('V', substr($data, $offset, 4))[1];
             $offset += 4;
-            
+
             if ($offset + $bodyLen > $dataLen) {
-                // Body would exceed data length - truncate
                 $bodyLen = $dataLen - $offset;
             }
-            
+
             $body = substr($data, $offset, $bodyLen);
             $offset += $bodyLen;
-            
+
             $this->pendingAcks[] = $msgId;
             try {
                 $results[] = $this->handleMessage($msgId, $body);
             } catch (MTProtoException $e) {
-                // RPC errors and bad_msg must propagate — store as exception for receiveResponse
                 $results[] = [
                     'msg_id' => $msgId,
                     '_exception' => $e,
                 ];
             } catch (\Throwable $e) {
-                // Only catch deserialization/parsing errors gracefully
                 $this->logger?->error(sprintf(
                     'Failed to handle container message %d: %s',
                     $msgId,
@@ -764,14 +533,12 @@ final class RPCHandler
 
         $constructorId = unpack('V', substr($resultData, 0, 4))[1];
 
-        // Check for gzip
         if ($constructorId === self::GZIP_PACKED) {
-            $packedData = $this->readTLBytes($resultData, 4);
-            $resultData = $this->gzdecodeChecked($packedData);
+            $packedData = FrameCodec::readTLBytes($resultData, 4);
+            $resultData = FrameCodec::gunzip($packedData);
             $constructorId = unpack('V', substr($resultData, 0, 4))[1];
         }
 
-        // Check for RPC error
         if ($constructorId === self::RPC_ERROR) {
             $error = $this->serializer->deserialize($resultData);
             throw new MTProtoException(
@@ -792,9 +559,8 @@ final class RPCHandler
     private function handleMsgsAck(string $data): array
     {
         $ack = $this->serializer->deserialize($data);
-        
+
         foreach ($ack['msg_ids'] ?? [] as $msgId) {
-            // Remove from pending if exists
             unset($this->pendingMessages[$msgId]);
         }
 
@@ -809,7 +575,6 @@ final class RPCHandler
         $badMsg = $this->serializer->deserialize($data);
         $errorCode = $badMsg['error_code'];
 
-        // Update server salt if needed
         if (isset($badMsg['new_server_salt'])) {
             $saltBytes = pack('P', $badMsg['new_server_salt']);
             $this->session->setServerSalt($saltBytes);
@@ -831,7 +596,6 @@ final class RPCHandler
 
         $errorMsg = $errorMessages[$errorCode] ?? "code {$errorCode}";
 
-        // For incorrect server salt: salt already updated above, allow retry
         if ($errorCode === 48) {
             $this->logger?->warning("Bad message: {$errorMsg} — salt updated, will retry");
             return [
@@ -843,7 +607,6 @@ final class RPCHandler
             ];
         }
 
-        // For seqno errors: reset session to fix the counter
         if ($errorCode >= 32 && $errorCode <= 35) {
             $this->logger?->warning("Bad message: {$errorMsg} — regenerating session");
             $this->session->regenerateSessionId();
@@ -862,8 +625,7 @@ final class RPCHandler
     private function handleNewSession(string $data): array
     {
         $session = $this->serializer->deserialize($data);
-        
-        // Update server salt
+
         if (isset($session['server_salt'])) {
             $saltBytes = pack('P', $session['server_salt']);
             $this->session->setServerSalt($saltBytes);
@@ -897,7 +659,6 @@ final class RPCHandler
             return;
         }
 
-        // Take up to 8192 acks
         $acks = array_splice($this->pendingAcks, 0, 8192);
 
         $message = [
@@ -919,13 +680,13 @@ final class RPCHandler
         $constructor = $data['_'] ?? '';
 
         static $updateTypes = [
-            'updates'              => true,
-            'updatesCombined'      => true,
-            'updateShort'          => true,
-            'updateShortMessage'   => true,
+            'updates' => true,
+            'updatesCombined' => true,
+            'updateShort' => true,
+            'updateShortMessage' => true,
             'updateShortChatMessage' => true,
             'updateShortSentMessage' => true,
-            'updatesTooLong'       => true,
+            'updatesTooLong' => true,
         ];
 
         if (isset($updateTypes[$constructor]) && $this->updateFeedCallback !== null) {
@@ -956,10 +717,12 @@ final class RPCHandler
 final class PendingMessage
 {
     public function __construct(
-        public readonly int $msgId,
+        public readonly int    $msgId,
         public readonly string $method,
-        public readonly array $params,
-        public readonly float $sentAt,
-        public int $retries = 0,
-    ) {}
+        public readonly array  $params,
+        public readonly float  $sentAt,
+        public int             $retries = 0,
+    )
+    {
+    }
 }

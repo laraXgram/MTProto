@@ -8,7 +8,6 @@ use LaraGram\MTProto\Auth\AuthKeyGenerator;
 use LaraGram\MTProto\Contracts\ConnectionInterface;
 use LaraGram\MTProto\Contracts\CryptoInterface;
 use LaraGram\MTProto\Contracts\RateLimiterInterface;
-use LaraGram\MTProto\Contracts\EventLoopInterface;
 use LaraGram\MTProto\Contracts\SessionInterface;
 use LaraGram\MTProto\Contracts\TransportInterface;
 use LaraGram\MTProto\Crypto\NativeCrypto;
@@ -20,6 +19,7 @@ use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\Runtime\SwooleRuntime;
 use LaraGram\Filesystem\Filesystem;
 use LaraGram\Filesystem\Mime\MimeTypes;
+use LaraGram\MTProto\Foundation\FileId;
 use LaraGram\MTProto\Foundation\FileUploader;
 use LaraGram\MTProto\Foundation\InputMedia;
 use LaraGram\Log\LoggerInterface;
@@ -27,18 +27,12 @@ use LaraGram\MTProto\Session\FileSession;
 use LaraGram\MTProto\TL\TLParser;
 use LaraGram\MTProto\Generated\ClientMethods;
 use LaraGram\MTProto\Transport\AbridgedTransport;
+use LaraGram\MTProto\Transport\FakeTlsConnection;
+use LaraGram\MTProto\Transport\IntermediatePaddedTransport;
+use LaraGram\MTProto\Transport\ObfuscatedConnection;
+use LaraGram\MTProto\Transport\ProxySettings;
 
 /**
- * MTProto Client — the single entry-point for Telegram API calls.
- *
- * Usage:
- *   $client = new Client(API_ID, API_HASH, ['session_dir' => './sessions']);
- *   $client->connect('user_dc4');          // loads existing session
- *   $me = $client->invoke('users.getFullUser', ['id' => ['_' => 'inputUserSelf']]);
- *   // or fluent:
- *   $me = $client->users->getFullUser(['id' => ['_' => 'inputUserSelf']]);
- *   $client->disconnect();
- *
  * @mixin \LaraGram\MTProto\Generated\ClientIdeHelper
  */
 class Client
@@ -46,113 +40,169 @@ class Client
     use ClientMethods;
 
     public const VERSION = '1.0.0-dev';
-    public const LAYER   = 227;
+    public const LAYER = 227;
 
-    // ── components ─────────────────────────────────────────────────────
-    private ConnectionInterface  $connection;
-    private TransportInterface   $transport;
-    private CryptoInterface      $crypto;
-    private SessionInterface     $session;
-    private ?EventLoopInterface  $eventLoop         = null;
-    private ?RPCHandler          $rpc               = null;
-    private ?MessagePump         $pump              = null;
-    private ?TLParser            $tlParser          = null;
-    private ?PeerDatabase        $peerDb            = null;
-    private ?PeerResolver        $peerResolver      = null;
-    private ?ParamPreprocessor   $paramPreprocessor = null;
+    private ConnectionInterface $connection;
+    private TransportInterface $transport;
+    private CryptoInterface $crypto;
+    private bool $obfuscated = false;
+    private string $protocolTag = '';
+    private ?ProxySettings $proxy = null;
+    private SessionInterface $session;
+    private ?RPCHandler $rpc = null;
+    private ?MessagePump $pump = null;
+    private ?TLParser $tlParser = null;
+    private ?PeerDatabase $peerDb = null;
+    private ?\LaraGram\MTProto\Contracts\Store $peerStore = null;
+    private ?\LaraGram\MTProto\Contracts\Store $sessionStore = null;
+    private ?\LaraGram\MTProto\Contracts\Store $stateStore = null;
+    private ?PeerResolver $peerResolver = null;
+    private ?ParamPreprocessor $paramPreprocessor = null;
 
-    // ── config ─────────────────────────────────────────────────────────
-    private int    $apiId;
+    private int $apiId;
     private string $apiHash;
     private ?DeviceProfile $deviceProfile = null;
     private ?MimeTypes $mimeTypes = null;
     private ?RateLimiterInterface $rateLimiter = null;
-    private bool  $rateLimitEnabled = false;
+    private bool $rateLimitEnabled = false;
+    private ?HumanPacer $humanPacer = null;
     /** @var array<string, array{rate?: float, capacity?: float}> */
     private array $rateLimits = [];
-    private int    $dcId            = 2;
-    private bool   $testMode        = false;
-    private bool   $ipv6            = false;
-    private float  $timeout         = 10.0;
-    private string $sessionDir      = './sessions';
-    private int    $layer           = self::LAYER;
-    private bool   $floodSleep      = true;
-    private int    $floodSleepLimit = 60;
-    private int    $maxRetries      = 5;
-    private bool   $usePump         = false;
+    private int $dcId = 2;
+    private bool $testMode = false;
+    private bool $ipv6 = false;
+    private float $timeout = 10.0;
+    private string $sessionDir = './sessions';
+    private int $layer = self::LAYER;
+    private bool $floodSleep = true;
+    private int $floodSleepLimit = 60;
+    private int $maxRetries = 5;
+    private bool $usePump = false;
     private ?LoggerInterface $logger;
     private Filesystem $files;
     private ?Runtime $runtime;
 
-    // ── state ──────────────────────────────────────────────────────────
-    private bool   $connected   = false;
+    private bool $connected = false;
     private string $sessionName = '';
 
-    // ================================================================
-    //  Construction
-    // ================================================================
+    /** True when the current session's auth key was freshly generated this connect (vs loaded). */
+    private bool $freshAuthKey = false;
+
+    /** Raw constructor options, retained so {@see cloneForDc} can mint siblings. */
+    private array $options = [];
+
+    /** Lazily-built cross-DC connection pool (P3.3). */
+    private ?ConnectionPool $pool = null;
 
     /**
-     * @param int    $apiId   Telegram API ID
+     * @param int $apiId Telegram API ID
      * @param string $apiHash Telegram API Hash
-     * @param array  $options {
-     *     @type int    $dc_id       Initial DC (default 2)
-     *     @type bool   $test_mode   Use test servers
-     *     @type bool   $ipv6        Use IPv6
-     *     @type float  $timeout     Connection timeout
-     *     @type string $session_dir Directory for session files
-     *     @type int    $layer       MTProto API layer (default Client::LAYER; must match compiled schema)
-     *     @type bool   $flood_sleep       Auto-sleep & retry on FLOOD_WAIT (default true)
-     *     @type int    $flood_sleep_limit Max FLOOD_WAIT seconds to wait before rethrowing (default 60)
-     *     @type int    $max_retries       Max retries for transient/migrate errors (default 5)
-     *     @type ConnectionInterface  $connection  Custom connection driver
-     *     @type TransportInterface   $transport   Custom transport
-     *     @type CryptoInterface      $crypto      Custom crypto
-     *     @type EventLoopInterface   $event_loop  Event loop (auto-selects connection type)
+     * @param array $options {
+     * @type int $dc_id Initial DC (default 2)
+     * @type bool $test_mode Use test servers
+     * @type bool $ipv6 Use IPv6
+     * @type float $timeout Connection timeout
+     * @type string $session_dir Directory for session files
+     * @type int $layer MTProto API layer (default Client::LAYER; must match compiled schema)
+     * @type bool $flood_sleep Auto-sleep & retry on FLOOD_WAIT (default true)
+     * @type int $flood_sleep_limit Max FLOOD_WAIT seconds to wait before rethrowing (default 60)
+     * @type int $max_retries Max retries for transient/migrate errors (default 5)
+     * @type ConnectionInterface $connection Custom connection driver
+     * @type TransportInterface $transport Custom transport
+     * @type CryptoInterface $crypto Custom crypto
      * }
      */
     public function __construct(int $apiId, string $apiHash, array $options = [])
     {
-        $this->apiId           = $apiId;
-        $this->apiHash         = $apiHash;
-        $this->deviceProfile   = ($options['device'] ?? null) instanceof DeviceProfile
+        $this->options = $options;
+        $this->apiId = $apiId;
+        $this->apiHash = $apiHash;
+        $this->deviceProfile = ($options['device'] ?? null) instanceof DeviceProfile
             ? $options['device']
             : DeviceProfile::resolve(is_array($options['device'] ?? null) ? $options['device'] : []);
-        $this->rateLimiter     = $options['rate_limiter'] ?? null;
-        $this->rateLimits      = (array) ($options['rate_limits'] ?? []);
-        $this->rateLimitEnabled = (bool) ($this->rateLimits['enabled'] ?? ($this->rateLimiter !== null));
-        $this->dcId            = $options['dc_id']             ?? 2;
-        $this->testMode        = $options['test_mode']         ?? false;
-        $this->ipv6            = $options['ipv6']              ?? false;
-        $this->timeout         = $options['timeout']           ?? 10.0;
-        $this->sessionDir      = $options['session_dir']       ?? './sessions';
-        $this->layer           = (int) ($options['layer']      ?? self::LAYER);
-        $this->floodSleep      = (bool) ($options['flood_sleep']       ?? true);
-        $this->floodSleepLimit = (int) ($options['flood_sleep_limit']  ?? 60);
-        $this->maxRetries      = (int) ($options['max_retries']        ?? 5);
-        $this->usePump         = (bool) ($options['use_pump']          ?? false);
-        $this->logger          = $options['logger'] ?? $this->resolveDefaultLogger();
-        $this->files           = $options['files'] ?? new Filesystem();
-        $this->runtime         = $options['runtime'] ?? null;
+        $this->rateLimiter = $options['rate_limiter'] ?? null;
+        $this->rateLimits = (array)($options['rate_limits'] ?? []);
+        $this->rateLimitEnabled = (bool)($this->rateLimits['enabled'] ?? ($this->rateLimiter !== null));
+        $this->humanPacer = ($options['human_pacer'] ?? null) instanceof HumanPacer
+            ? $options['human_pacer']
+            : new HumanPacer((array)($options['pacing'] ?? []));
+        $this->dcId = $options['dc_id'] ?? 2;
+        $this->testMode = $options['test_mode'] ?? false;
+        $this->ipv6 = $options['ipv6'] ?? false;
+        $this->timeout = $options['timeout'] ?? 10.0;
+        $this->sessionDir = $options['session_dir'] ?? './sessions';
+        $this->layer = (int)($options['layer'] ?? self::LAYER);
+        $this->floodSleep = (bool)($options['flood_sleep'] ?? true);
+        $this->floodSleepLimit = (int)($options['flood_sleep_limit'] ?? 60);
+        $this->maxRetries = (int)($options['max_retries'] ?? 5);
+        $this->usePump = (bool)($options['use_pump'] ?? false);
+        $this->logger = $options['logger'] ?? $this->resolveDefaultLogger();
+        $this->files = $options['files'] ?? new Filesystem();
+        $this->runtime = $options['runtime'] ?? null;
 
-        $this->eventLoop  = $options['event_loop'] ?? null;
-        $this->connection = $options['connection'] ?? new SyncConnection();
-        $this->transport  = $options['transport']  ?? new AbridgedTransport();
-        $this->crypto     = $options['crypto']     ?? new NativeCrypto();
+        $this->transport = $options['transport'] ?? new AbridgedTransport();
+        $this->crypto = $options['crypto'] ?? new NativeCrypto();
+        $this->obfuscated = (bool)($options['obfuscated'] ?? false);
+        $this->protocolTag = (string)($options['protocol_tag'] ?? ObfuscatedConnection::TAG_ABRIDGED);
+        $this->proxy = ($options['proxy'] ?? null) instanceof ProxySettings ? $options['proxy'] : null;
+        $this->peerStore = ($options['peer_store'] ?? null) instanceof \LaraGram\MTProto\Contracts\Store
+            ? $options['peer_store']
+            : null;
+        $this->sessionStore = ($options['session_store'] ?? null) instanceof \LaraGram\MTProto\Contracts\Store
+            ? $options['session_store']
+            : null;
+        $this->stateStore = ($options['state_store'] ?? null) instanceof \LaraGram\MTProto\Contracts\Store
+            ? $options['state_store']
+            : null;
+
+        if ($this->proxy !== null) {
+            $this->obfuscated = true;
+
+            if ($this->proxy->isPadded() || $this->proxy->isFakeTls()) {
+                $this->transport = new IntermediatePaddedTransport();
+                $this->protocolTag = ObfuscatedConnection::TAG_PADDED;
+            }
+        }
+
+        $this->connection = $options['connection'] ?? $this->makeConnection();
     }
 
-    // ================================================================
-    //  Connection lifecycle
-    // ================================================================
+    /**
+     * Build a fresh transport connection, wrapping it in the obfuscated2 CTR
+     * layer when enabled. Centralises connection creation so every
+     * reconnect/DC-switch path gets the same obfuscation treatment.
+     */
+    private function makeConnection(): ConnectionInterface
+    {
+        $connection = new SyncConnection();
+
+        if ($this->proxy !== null && $this->proxy->isFakeTls()) {
+            $connection = new FakeTlsConnection(
+                $connection,
+                $this->crypto,
+                $this->proxy->secret(),
+                $this->proxy->domain(),
+            );
+        }
+
+        if ($this->obfuscated) {
+            return new ObfuscatedConnection(
+                $connection,
+                $this->crypto,
+                $this->protocolTag,
+                $this->proxy?->secret(),
+                $this->proxy !== null ? $this->dcId : null,
+            );
+        }
+
+        return $connection;
+    }
 
     /**
      * Connect to Telegram using an existing (or fresh) session.
      *
-     * If the session file already contains an auth key the client is ready
-     * for API calls immediately — no login required.
-     *
-     * @param string $sessionName  e.g. "user_dc4"
-     * @return bool  true when session had an auth key (ready for API calls)
+     * @param string $sessionName
+     * @return bool
      */
     public function connect(string $sessionName = 'default'): bool
     {
@@ -161,29 +211,23 @@ class Client
         }
 
         $this->sessionName = $sessionName;
+        $this->freshAuthKey = false;
 
-        // Load / create session
         $this->files->ensureDirectoryExists($this->sessionDir, 0700);
-        $this->session = new FileSession($sessionName, $this->sessionDir, $this->files);
+        $this->session = $this->makeSession($sessionName);
 
-        // Read DC from session (the DC where we last authenticated)
         $storedDc = $this->session->getDcId();
         if ($storedDc >= 1 && $storedDc <= 5) {
             $this->dcId = $storedDc;
         }
 
-        // Initialise peer database (lives alongside the session file)
-        $this->peerDb = new PeerDatabase($this->sessionDir, $sessionName, $this->files);
+        $this->peerDb = new PeerDatabase($this->sessionDir, $sessionName, $this->files, $this->peerStore);
 
-        // TCP connect to the right DC
         $this->connectTcp();
 
-        // Generate auth key if this is a brand-new session
         if ($this->session->getAuthKey() === null) {
             $this->generateAuthKey();
         } else {
-            // Existing session: regenerate session ID so seqno starts fresh at 0.
-            // The server will respond with new_session_created + a fresh salt.
             $this->session->regenerateSessionId();
         }
 
@@ -201,14 +245,30 @@ class Client
             return;
         }
 
-        try { $this->session->save(); } catch (\Throwable) {}
-        try { $this->peerDb?->save(); } catch (\Throwable) {}
-        try { $this->pump?->stop(); } catch (\Throwable) {}
-        try { $this->connection->disconnect(); } catch (\Throwable) {}
+        try {
+            $this->session->save();
+        } catch (\Throwable) {
+        }
+        try {
+            $this->peerDb?->save();
+        } catch (\Throwable) {
+        }
+        try {
+            $this->pump?->stop();
+        } catch (\Throwable) {
+        }
+        try {
+            $this->pool?->closeAll();
+        } catch (\Throwable) {
+        }
+        try {
+            $this->connection->disconnect();
+        } catch (\Throwable) {
+        }
 
-        $this->rpc              = null;
-        $this->pump             = null;
-        $this->peerResolver     = null;
+        $this->rpc = null;
+        $this->pump = null;
+        $this->peerResolver = null;
         $this->paramPreprocessor = null;
         $this->resetNamespaces();
         $this->connected = false;
@@ -216,24 +276,17 @@ class Client
 
     /**
      * Create a new TCP connection reusing the existing auth key.
-     *
-     * The old connection object is abandoned (not closed) so callers
-     * holding a reference to the previous socket are unaffected.
      */
     public function reconnect(): void
     {
-        // Create a brand-new connection (the old one is simply discarded).
-        $this->connection = new SyncConnection();
+        $this->connection = $this->makeConnection();
         $this->connectTcp();
 
-        // Regenerate session ID so seqno starts fresh
         $this->session->regenerateSessionId();
 
-        // Reset RPC handler — it will be lazily re-created with
-        // the new connection on the next API call
-        $this->rpc              = null;
-        $this->pump             = null;
-        $this->peerResolver     = null;
+        $this->rpc = null;
+        $this->pump = null;
+        $this->peerResolver = null;
         $this->paramPreprocessor = null;
         $this->resetNamespaces();
     }
@@ -247,27 +300,31 @@ class Client
             throw new MTProtoException("Invalid DC: {$newDcId}");
         }
 
-        // Close current connection
-        try { $this->pump?->stop(); } catch (\Throwable) {}
-        try { $this->connection->disconnect(); } catch (\Throwable) {}
+        try {
+            $this->pump?->stop();
+        } catch (\Throwable) {
+        }
+        try {
+            $this->connection->disconnect();
+        } catch (\Throwable) {
+        }
 
-        $this->rpc              = null;
-        $this->pump             = null;
-        $this->peerResolver     = null;
+        $this->rpc = null;
+        $this->pump = null;
+        $this->peerResolver = null;
         $this->paramPreprocessor = null;
         $this->resetNamespaces();
         $this->dcId = $newDcId;
+        $this->freshAuthKey = false;
 
-        // Build a new session name: user_dc2 → user_dc4
         $newName = preg_replace('/dc\d+/', "dc{$newDcId}", $this->sessionName);
         if ($newName === null || $newName === $this->sessionName) {
             $newName = "user_dc{$newDcId}";
         }
         $this->sessionName = $newName;
-        $this->session = new FileSession($newName, $this->sessionDir, $this->files);
+        $this->session = $this->makeSession($newName);
 
-        // New TCP socket
-        $this->connection = new SyncConnection();
+        $this->connection = $this->makeConnection();
         $this->connectTcp();
 
         if ($this->session->getAuthKey() === null) {
@@ -280,36 +337,80 @@ class Client
         $this->session->save();
     }
 
-    // ================================================================
-    //  Invoke — the single public API for every Telegram method
-    // ================================================================
+    /**
+     * The cross-DC connection pool, lazily created on first use.
+     */
+    public function pool(): ConnectionPool
+    {
+        return $this->pool ??= new ConnectionPool($this, (array)($this->options['pool'] ?? []));
+    }
+
+    /**
+     * True when the current session's auth key was freshly generated during the
+     * last connect (rather than loaded from storage). The pool uses this to
+     * decide whether a secondary DC still needs an `auth.importAuthorization`.
+     */
+    public function isFreshAuthKey(): bool
+    {
+        return $this->freshAuthKey;
+    }
+
+    /**
+     * Whether RPCs can safely run concurrently on this connection. True only when
+     * the multiplexing {@see MessagePump} is live on a coroutine-capable runtime,
+     * the sync RPC path owns the socket per-call and must stay serial. Used by
+     * {@see FileUploader} to decide between parallel and serial part uploads.
+     */
+    public function supportsConcurrentInvoke(): bool
+    {
+        return $this->pump !== null
+            && $this->pump->isRunning()
+            && $this->getRuntime()->isSupported();
+    }
+
+    /**
+     * Mint a sibling client bound to a different DC, for the connection pool.
+     */
+    public function cloneForDc(int $dcId): self
+    {
+        $opts = $this->options;
+
+        $opts['dc_id'] = $dcId;
+        unset($opts['connection']);
+        $opts['transport'] = clone $this->transport;
+        $opts['crypto'] = clone $this->crypto;
+        $opts['obfuscated'] = $this->obfuscated;
+        $opts['protocol_tag'] = $this->protocolTag;
+        $opts['proxy'] = $this->proxy;
+        $opts['device'] = $this->deviceProfile;
+        $opts['rate_limiter'] = $this->rateLimiter;
+        $opts['human_pacer'] = $this->humanPacer;
+        $opts['runtime'] = $this->runtime;
+        $opts['logger'] = $this->logger;
+        $opts['files'] = $this->files;
+        $opts['session_dir'] = $this->sessionDir;
+
+        $opts['session_store'] = new \LaraGram\MTProto\Store\ArrayStore();
+
+        return new self($this->apiId, $this->apiHash, $opts);
+    }
 
     /**
      * Call any Telegram API method.
      *
-     * Handles automatically:
-     *  - Parameter preprocessing (auto InputPeer, random_id, reply_to, …)
-     *  - Connection initialisation (Ping + InvokeWithLayer + InitConnection)
-     *  - DC migration  (PHONE_MIGRATE_X / USER_MIGRATE_X / FILE_MIGRATE_X)
-     *  - Bad server salt  (auto-retry with new salt)
-     *  - Peer caching from every response
-     *
-     * @param  string $method  e.g. "account.updateProfile"
-     * @param  array  $params  Method parameters (simplified values accepted)
-     * @return mixed  Deserialized TL result (array, bool, int, etc.)
+     * @param string $method
+     * @param array $params
+     * @return mixed
      * @throws MTProtoException
      */
     public function invoke(string $method, array $params = []): mixed
     {
         $this->ensureConnected();
 
-        // ── Preprocess parameters ──────────────────────────────────────
         $params = $this->getPreprocessor()->process($method, $params);
 
-        // ── Send RPC ───────────────────────────────────────────────────
         $result = $this->invokeRaw($method, $params);
 
-        // ── Cache peers from response ──────────────────────────────────
         if ($this->peerDb !== null && is_array($result)) {
             $this->peerDb->cachePeersFromResponse($result);
             $this->peerDb->save();
@@ -319,19 +420,34 @@ class Client
     }
 
     /**
-     * Low-level invoke — no parameter preprocessing, no peer caching.
+     * Prime the peer database from the account's dialog list.
      *
-     * Used internally by PeerResolver to avoid infinite recursion when
-     * it needs to call contacts.resolveUsername / users.getUsers etc.
+     * @param int $limit
+     */
+    public function primePeerCache(int $limit = 100): void
+    {
+        if ($this->peerDb === null) {
+            return;
+        }
+
+        try {
+            $this->invoke('messages.getDialogs', [
+                'offset_date' => 0,
+                'offset_id' => 0,
+                'offset_peer' => ['_' => 'inputPeerEmpty'],
+                'limit' => $limit,
+                'hash' => 0,
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger?->warning("Peer cache prime (messages.getDialogs) failed: {$e->getMessage()}");
+        }
+    }
+
+    /**
+     * Low-level invoke - no parameter preprocessing, no peer caching.
      *
      * @internal
-     */
-    /**
-     * Upload a local file and return the `inputFile`/`inputFileBig` constructor
-     * to hand to an `InputMedia*` builder. Splits into 512 KiB parts; small
-     * files (≤10 MiB) carry an md5 checksum, big files use the big-file route.
-     *
-     * @param  callable|null  $progress  fn(int $partsDone, int $partsTotal): void
+     * @param callable|null $progress
      */
     public function uploadFile(string $path, ?string $fileName = null, ?callable $progress = null): array
     {
@@ -341,7 +457,7 @@ class Client
     /**
      * Upload raw bytes (same return shape as {@see uploadFile}).
      *
-     * @param  callable|null  $progress  fn(int $partsDone, int $partsTotal): void
+     * @param callable|null $progress
      */
     public function uploadBytes(string $contents, string $fileName, ?callable $progress = null): array
     {
@@ -352,7 +468,7 @@ class Client
      * Send an uploaded photo. Extra `messages.sendMedia` params (parse_mode,
      * reply_to_msg_id, reply_markup, silent, …) pass through $params.
      */
-    public function sendPhoto(string|int $peer, string $path, ?string $message = null, array $params = []): mixed
+    public function sendPhoto(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
     {
         return $this->sendUploadedMedia(
             $peer,
@@ -366,7 +482,7 @@ class Client
      * Send an uploaded file as a document. Pass `file_name` in $params to
      * override the on-wire name.
      */
-    public function sendDocument(string|int $peer, string $path, ?string $message = null, array $params = []): mixed
+    public function sendDocument(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
     {
         $name = $params['file_name'] ?? $this->files->basename($path);
         unset($params['file_name']);
@@ -384,12 +500,12 @@ class Client
     /**
      * Send an uploaded video. Recognised $params: duration, w, h.
      */
-    public function sendVideo(string|int $peer, string $path, ?string $message = null, array $params = []): mixed
+    public function sendVideo(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
     {
         $name = $params['file_name'] ?? $this->files->basename($path);
-        $duration = (int) ($params['duration'] ?? 0);
-        $w = (int) ($params['w'] ?? 0);
-        $h = (int) ($params['h'] ?? 0);
+        $duration = (int)($params['duration'] ?? 0);
+        $w = (int)($params['w'] ?? 0);
+        $h = (int)($params['h'] ?? 0);
         unset($params['file_name'], $params['duration'], $params['w'], $params['h']);
 
         $media = InputMedia::uploadedDocument(
@@ -407,11 +523,11 @@ class Client
     /**
      * Send an uploaded audio track. Recognised $params: duration, title, performer.
      */
-    public function sendAudio(string|int $peer, string $path, ?string $message = null, array $params = []): mixed
+    public function sendAudio(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
     {
         $name = $params['file_name'] ?? $this->files->basename($path);
         $attr = InputMedia::attrAudio(
-            (int) ($params['duration'] ?? 0),
+            (int)($params['duration'] ?? 0),
             $params['title'] ?? null,
             $params['performer'] ?? null,
         );
@@ -429,9 +545,9 @@ class Client
     /**
      * Send an uploaded voice note (single audio attribute, voice flag set).
      */
-    public function sendVoice(string|int $peer, string $path, ?string $message = null, array $params = []): mixed
+    public function sendVoice(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
     {
-        $duration = (int) ($params['duration'] ?? 0);
+        $duration = (int)($params['duration'] ?? 0);
         unset($params['duration'], $params['file_name']);
 
         $media = InputMedia::uploadedDocument(
@@ -446,22 +562,146 @@ class Client
     /**
      * Build and dispatch a messages.sendMedia for an already-built InputMedia.
      */
-    private function sendUploadedMedia(string|int $peer, array $media, ?string $message, array $params): mixed
+    private function sendUploadedMedia(string|int|array $peer, array $media, ?string $message, array $params): mixed
     {
         return $this->invoke('messages.sendMedia', array_merge([
-            'peer'    => $peer,
-            'media'   => $media,
+            'peer' => $peer,
+            'media' => $media,
             'message' => $message ?? '',
         ], $params));
     }
 
     /**
-     * Resolve a file's MIME type via LaraGram's MimeTypes service.
+     * Send a pre-built `InputMedia*` constructor (e.g. from {@see InputMedia}).
+     */
+    public function sendMedia(string|int|array $peer, array $media, ?string $message = null, array $params = []): mixed
+    {
+        return $this->sendUploadedMedia($peer, $media, $message, $params);
+    }
+
+    /**
+     * Resend already-stored media by a portable file_id (no re-upload).
+     */
+    public function sendMediaById(string|int|array $peer, string $fileId, ?string $message = null, array $params = []): mixed
+    {
+        return $this->sendUploadedMedia($peer, FileId::toInputMedia($fileId), $message, $params);
+    }
+
+    /**
+     * Mint a portable file_id from a message/media/photo/document array so it can
+     * be re-sent later with {@see sendMediaById()}.
+     */
+    public function fileId(array $media): string
+    {
+        // Accept a whole message — dig out its .media for convenience.
+        if (($media['_'] ?? '') === 'message' && isset($media['media']) && is_array($media['media'])) {
+            $media = $media['media'];
+        }
+
+        return FileId::fromMedia($media);
+    }
+
+    /**
+     * Send a grouped album (`messages.sendMultiMedia`) of 2–10 items.
+     */
+    public function sendAlbum(string|int|array $peer, array $items, array $params = []): mixed
+    {
+        if (count($items) < 2 || count($items) > 10) {
+            throw new MTProtoException('An album needs between 2 and 10 items');
+        }
+
+        $inputPeer = is_array($peer) ? $peer : ($this->getResolver()?->resolveInputPeer($peer) ?? $peer);
+        $multiMedia = [];
+
+        foreach ($items as $item) {
+            [$media, $caption] = $this->resolveAlbumItem($item);
+
+            if (in_array($media['_'] ?? '', ['inputMediaUploadedPhoto', 'inputMediaUploadedDocument'], true)) {
+                $uploaded = $this->invoke('messages.uploadMedia', ['peer' => $inputPeer, 'media' => $media]);
+                $media = $this->toResendableMedia($uploaded);
+            }
+
+            $multiMedia[] = [
+                '_' => 'inputSingleMedia',
+                'media' => $media,
+                'random_id' => random_int(PHP_INT_MIN, PHP_INT_MAX),
+                'message' => $caption ?? '',
+            ];
+        }
+
+        return $this->invoke('messages.sendMultiMedia', array_merge([
+            'peer' => $inputPeer,
+            'multi_media' => $multiMedia,
+        ], $params));
+    }
+
+    /**
+     * Normalise one album item spec into `[InputMedia, caption]`.
      *
-     * The filename extension is authoritative for an upload (it's the user's
-     * stated intent and what Telegram clients key off), so it wins. For
-     * extensionless files we fall back to content sniffing, ignoring an
-     * inconclusive "application/octet-stream" sniff.
+     * @return array{0: array, 1: string|null}
+     */
+    private function resolveAlbumItem(array|string $item): array
+    {
+        if (is_string($item)) {
+            return [$this->autoInputMedia($item), null];
+        }
+
+        $caption = $item['caption'] ?? $item['message'] ?? null;
+
+        if (isset($item['media']) && is_array($item['media'])) {
+            return [$item['media'], $caption];
+        }
+        if (isset($item['file_id'])) {
+            return [FileId::toInputMedia((string)$item['file_id']), $caption];
+        }
+        if (isset($item['path'])) {
+            return [$this->autoInputMedia((string)$item['path'], (string)($item['type'] ?? '')), $caption];
+        }
+
+        throw new MTProtoException('Album item needs one of: path, file_id, media');
+    }
+
+    /**
+     * Upload a path and wrap it as a photo or document InputMedia by type/mime.
+     */
+    private function autoInputMedia(string $path, string $type = ''): array
+    {
+        $mime = $this->guessMimeType($path);
+        $isPhoto = $type === 'photo' || ($type === '' && str_starts_with($mime, 'image/') && $mime !== 'image/webp');
+
+        if ($isPhoto) {
+            return InputMedia::uploadedPhoto($this->uploadFile($path));
+        }
+
+        $name = $this->files->basename($path);
+
+        return InputMedia::uploadedDocument(
+            $this->uploadFile($path, $name),
+            $mime ?: 'application/octet-stream',
+            [InputMedia::attrFilename($name)],
+        );
+    }
+
+    /**
+     * Convert a `messages.uploadMedia` result into a resendable
+     * `inputMediaPhoto`/`inputMediaDocument` for `sendMultiMedia`.
+     */
+    private function toResendableMedia(array $uploaded): array
+    {
+        if (isset($uploaded['photo']) && is_array($uploaded['photo'])) {
+            $p = $uploaded['photo'];
+            return InputMedia::photo((int)$p['id'], (int)$p['access_hash'], (string)($p['file_reference'] ?? ''));
+        }
+        if (isset($uploaded['document']) && is_array($uploaded['document'])) {
+            $d = $uploaded['document'];
+            return InputMedia::document((int)$d['id'], (int)$d['access_hash'], (string)($d['file_reference'] ?? ''));
+        }
+
+        throw new MTProtoException('messages.uploadMedia returned no photo/document');
+    }
+
+    /**
+     * Resolve a file's MIME type via LaraGram's MimeTypes service.
      */
     private function guessMimeType(string $path): string
     {
@@ -486,16 +726,10 @@ class Client
     {
         $this->ensureConnected();
 
-        // Proactively pace the send before it leaves the process (B2). Done once
-        // here, outside the retry loop, so retries don't double-charge buckets.
         $this->throttle($method, $params);
 
-        // Bounded retry loop. Recoverable conditions (DC migration, FLOOD_WAIT,
-        // transient server/network errors, AUTH_KEY_DUPLICATED) loop back and
-        // re-issue the call; everything else propagates to the caller. Counters
-        // are bounded so a persistently-failing server can never spin forever.
         $migrations = 0;
-        $retries    = 0;
+        $retries = 0;
 
         while (true) {
             try {
@@ -506,35 +740,25 @@ class Client
             } catch (MTProtoException $e) {
                 $message = $e->getMessage();
 
-                // ── Auto DC-migration (PHONE/USER/FILE/NETWORK_MIGRATE_x) ──
                 if (preg_match('/(PHONE|USER|FILE|NETWORK)_MIGRATE_(\d+)/', $message, $m)) {
                     if (++$migrations > 5) {
                         throw $e;
                     }
-                    $this->switchDc((int) $m[2]);
+                    $this->switchDc((int)$m[2]);
                     continue;
                 }
 
-                // ── FLOOD_WAIT / SLOWMODE_WAIT auto-sleep ──────────────────
-                // Telegram tells us exactly how long to back off. If it is within
-                // the configured limit, coroutine-sleep (yields under Swoole's
-                // SWOOLE_HOOK_ALL) and retry; otherwise let the caller decide.
                 $wait = $this->parseWaitSeconds($message);
                 if ($wait !== null) {
                     if ($this->floodSleep && $wait <= $this->floodSleepLimit) {
-                        // Add sub-second jitter so resumes don't land on a fixed
-                        // cadence (B4) — many accounts resuming at the exact same
-                        // offset is itself a detectable pattern.
                         $jitter = mt_rand(0, 1000) / 1000.0;
                         $this->logger?->info("{$method}: flood wait {$wait}s — sleeping then retrying");
                         $this->backoffSleep($wait + $jitter);
                         continue;
                     }
-                    throw $e; // above flood_sleep_limit — surface to caller
+                    throw $e;
                 }
 
-                // ── AUTH_KEY_DUPLICATED — auth key reused on another conn ──
-                // The session id must be dropped and the connection re-handshaked.
                 if (str_contains($message, 'AUTH_KEY_DUPLICATED')) {
                     if (++$retries > $this->maxRetries) {
                         throw $e;
@@ -545,14 +769,12 @@ class Client
                     continue;
                 }
 
-                // ── Transient server/network errors — exponential backoff ──
                 if ($this->isTransientError($e)) {
                     if (++$retries > $this->maxRetries) {
                         throw $e;
                     }
-                    // Equal-jitter exponential backoff (B4): half the window is
-                    // fixed, half random, so retries avoid a fixed cadence.
-                    $base  = min(2 ** ($retries - 1), 8);
+
+                    $base = min(2 ** ($retries - 1), 8);
                     $delay = $base / 2 + (mt_rand(0, 1000) / 1000.0) * ($base / 2);
                     $this->logger?->warning("{$method}: transient error '{$message}' — retry {$retries}/{$this->maxRetries} in " . round($delay, 2) . 's');
                     $this->backoffSleep($delay);
@@ -563,13 +785,11 @@ class Client
             }
         }
 
-        // Auto-convert Bool results to native PHP bool
         if (is_array($result) && isset($result['_'])) {
-            if ($result['_'] === 'boolTrue')  return true;
+            if ($result['_'] === 'boolTrue') return true;
             if ($result['_'] === 'boolFalse') return false;
         }
 
-        // Cache peers from raw invocations too (e.g. PeerResolver calls)
         if ($this->peerDb !== null && is_array($result)) {
             $this->peerDb->cachePeersFromResponse($result);
         }
@@ -577,40 +797,102 @@ class Client
         return $result;
     }
 
-    // ================================================================
-    //  Getters
-    // ================================================================
-
-    public function getApiId():        int                 { return $this->apiId;    }
-    public function getApiHash():      string              { return $this->apiHash;  }
-    public function getDcId():         int                 { return $this->dcId;     }
-    public function getSession():      SessionInterface    { return $this->session;  }
-    public function getCrypto():       CryptoInterface     { return $this->crypto;   }
-    public function isReady():         bool                { return $this->connected && $this->connection->isConnected(); }
-    public function getConnection():   ConnectionInterface { return $this->connection; }
-    public function getTransport():    TransportInterface  { return $this->transport;  }
-    public function getTlParser():     ?TLParser           { return $this->tlParser;   }
-    public function getPeerDatabase(): ?PeerDatabase       { return $this->peerDb;     }
-    public function getResolver():     ?PeerResolver       { return $this->peerResolver; }
-    public function getSessionDir():   string              { return $this->sessionDir;   }
-    public function getSessionName():  string              { return $this->sessionName;  }
-    public function getRpcHandler():   ?RPCHandler         { return $this->rpc;          }
-    public function getEventLoop():    ?EventLoopInterface { return $this->eventLoop;    }
-    public function getLogger():       ?LoggerInterface    { return $this->logger;       }
-    public function getFiles():        Filesystem          { return $this->files;        }
-    public function getRuntime():      Runtime             { return $this->runtime ??= new SwooleRuntime(); }
-
-    /**
-     * Attach an event loop to this client.
-     */
-    public function setEventLoop(EventLoopInterface $eventLoop): void
+    public function getApiId(): int
     {
-        $this->eventLoop = $eventLoop;
+        return $this->apiId;
     }
 
-    // ================================================================
-    //  Internals
-    // ================================================================
+    public function getApiHash(): string
+    {
+        return $this->apiHash;
+    }
+
+    public function getDcId(): int
+    {
+        return $this->dcId;
+    }
+
+    public function getSession(): SessionInterface
+    {
+        return $this->session;
+    }
+
+    public function getCrypto(): CryptoInterface
+    {
+        return $this->crypto;
+    }
+
+    public function isReady(): bool
+    {
+        return $this->connected && $this->connection->isConnected();
+    }
+
+    public function getConnection(): ConnectionInterface
+    {
+        return $this->connection;
+    }
+
+    public function getTransport(): TransportInterface
+    {
+        return $this->transport;
+    }
+
+    public function getTlParser(): ?TLParser
+    {
+        return $this->tlParser;
+    }
+
+    public function getPeerDatabase(): ?PeerDatabase
+    {
+        return $this->peerDb;
+    }
+
+    public function getResolver(): ?PeerResolver
+    {
+        return $this->peerResolver;
+    }
+
+    public function getSessionDir(): string
+    {
+        return $this->sessionDir;
+    }
+
+    public function getSessionName(): string
+    {
+        return $this->sessionName;
+    }
+
+    public function getRpcHandler(): ?RPCHandler
+    {
+        return $this->rpc;
+    }
+
+    public function getLogger(): ?LoggerInterface
+    {
+        return $this->logger;
+    }
+
+    public function getFiles(): Filesystem
+    {
+        return $this->files;
+    }
+
+    public function getRuntime(): Runtime
+    {
+        return $this->runtime ??= new SwooleRuntime();
+    }
+
+    public function getStateStore(): ?\LaraGram\MTProto\Contracts\Store
+    {
+        return $this->stateStore;
+    }
+
+    private function makeSession(string $name): SessionInterface
+    {
+        return $this->sessionStore !== null
+            ? new \LaraGram\MTProto\Session\StoreSession($name, $this->sessionStore)
+            : new FileSession($name, $this->sessionDir, $this->files);
+    }
 
     private function ensureConnected(): void
     {
@@ -619,10 +901,6 @@ class Client
         }
     }
 
-    /**
-     * Resolve the framework Log channel from the container, or null when the
-     * package runs outside a booted application (bare CLI / unit tests).
-     */
     private function resolveDefaultLogger(): ?LoggerInterface
     {
         if (function_exists('app')) {
@@ -638,44 +916,48 @@ class Client
     /**
      * Extract the wait seconds from a FLOOD_WAIT-style RPC error message.
      *
-     * Covers FLOOD_WAIT_x, SLOWMODE_WAIT_x and FLOOD_PREMIUM_WAIT_x — all of
-     * which encode the back-off duration (seconds) in the suffix.
-     *
      * @return int|null  Seconds to wait, or null if the message is not a wait error.
      */
     private function parseWaitSeconds(string $message): ?int
     {
         if (preg_match('/(?:FLOOD_WAIT|SLOWMODE_WAIT|FLOOD_PREMIUM_WAIT)_(\d+)/', $message, $m)) {
-            return (int) $m[1];
+            return (int)$m[1];
         }
 
         return null;
     }
 
-    /**
-     * Proactively pace an outgoing call (B2): draw from a global bucket and,
-     * for peer-addressed methods, a per-peer bucket. Sleeps the larger wait.
-     */
     private function throttle(string $method, array $params): void
     {
-        if ($this->rateLimiter === null || ! $this->rateLimitEnabled) {
-            return;
+        $wait = 0.0;
+
+        if ($this->rateLimiter !== null && $this->rateLimitEnabled) {
+            $g = $this->rateLimits['global'] ?? [];
+            $wait = $this->rateLimiter->reserve('global', $g['rate'] ?? null, $g['capacity'] ?? null);
+
+            if (($peer = $this->peerKey($params)) !== null) {
+                $p = $this->rateLimits['per_peer'] ?? [];
+                $wait = max($wait, $this->rateLimiter->reserve(
+                    'peer:' . $peer,
+                    $p['rate'] ?? 1.0,
+                    $p['capacity'] ?? 5.0,
+                ));
+            }
+
+            if ($wait > 0.0) {
+                $this->logger?->debug("{$method}: rate-limit pacing " . round($wait, 2) . 's');
+            }
         }
 
-        $g = $this->rateLimits['global'] ?? [];
-        $wait = $this->rateLimiter->reserve('global', $g['rate'] ?? null, $g['capacity'] ?? null);
-
-        if (($peer = $this->peerKey($params)) !== null) {
-            $p = $this->rateLimits['per_peer'] ?? [];
-            $wait = max($wait, $this->rateLimiter->reserve(
-                'peer:' . $peer,
-                $p['rate'] ?? 1.0,
-                $p['capacity'] ?? 5.0,
-            ));
+        if ($this->humanPacer !== null && $this->humanPacer->isEnabled()) {
+            $human = $this->humanPacer->delayFor($method, $params);
+            if ($human > 0.0) {
+                $this->logger?->debug("{$method}: human pacing " . round($human, 2) . 's');
+                $wait += $human;
+            }
         }
 
         if ($wait > 0.0) {
-            $this->logger?->debug("{$method}: rate-limit pacing " . round($wait, 2) . 's');
             $this->backoffSleep($wait);
         }
     }
@@ -694,16 +976,14 @@ class Client
         if (is_array($peer)) {
             $id = $peer['user_id'] ?? $peer['channel_id'] ?? $peer['chat_id'] ?? null;
 
-            return $id !== null ? (string) $id : md5((string) json_encode($peer));
+            return $id !== null ? (string)$id : md5((string)json_encode($peer));
         }
 
-        return (string) $peer;
+        return (string)$peer;
     }
 
     /**
-     * Coroutine-friendly back-off sleep. Yields under the Runtime when present
-     * (Swoole hook), else falls back to a blocking usleep. Accepts fractional
-     * seconds so jittered delays are honoured exactly.
+     * Coroutine-friendly back-off sleep.
      */
     private function backoffSleep(float $seconds): void
     {
@@ -716,16 +996,11 @@ class Client
             return;
         }
 
-        usleep((int) round($seconds * 1_000_000));
+        usleep((int)round($seconds * 1_000_000));
     }
 
-    /**
-     * Whether an RPC error is a transient server/network failure that is safe
-     * to retry after a short back-off (Telegram returns these under load).
-     */
     private function isTransientError(MTProtoException $e): bool
     {
-        // -500 (internal) and -503 (timeout/overload) are server-side transients.
         $code = $e->getCode();
         if ($code === -500 || $code === -503) {
             return true;
@@ -733,13 +1008,13 @@ class Client
 
         $message = $e->getMessage();
         foreach ([
-            'AUTH_RESTART',
-            'RPC_CALL_FAIL',
-            'RPC_MCGET_FAIL',
-            'WORKER_BUSY_TOO_LONG_RETRY',
-            'INTERNAL_SERVER_ERROR',
-            'Timeout waiting for response',
-        ] as $needle) {
+                     'AUTH_RESTART',
+                     'RPC_CALL_FAIL',
+                     'RPC_MCGET_FAIL',
+                     'WORKER_BUSY_TOO_LONG_RETRY',
+                     'INTERNAL_SERVER_ERROR',
+                     'Timeout waiting for response',
+                 ] as $needle) {
             if (str_contains($message, $needle)) {
                 return true;
             }
@@ -757,9 +1032,6 @@ class Client
             return $this->paramPreprocessor;
         }
 
-        // Only the TL parser is needed here. Do NOT call getRpc(): under the pump
-        // it would build a second RPCHandler that reads the same socket as the
-        // pump's reader (two readers → stream corruption).
         $this->ensureTlParser();
 
         $this->peerResolver = new PeerResolver($this->peerDb, $this);
@@ -790,8 +1062,6 @@ class Client
             $this->logger,
         );
 
-        // Keep the RPC layer in sync with the configured layer (default
-        // Client::LAYER). Single source of truth — drives config('mtproto.layer').
         $this->rpc->setLayer($this->layer);
         if ($this->deviceProfile !== null) {
             $this->rpc->setDeviceProfile($this->deviceProfile);
@@ -823,11 +1093,6 @@ class Client
 
     /**
      * Build (once) the single-reader {@see MessagePump} for this client.
-     *
-     * Does NOT start the reader — call {@see startPump()} from inside a Swoole
-     * coroutine context for that. The pump is the Phase 1 replacement for the
-     * RPCHandler poll loop + UpdateLoop dup reader; while it is being validated
-     * the old paths remain the default (use_pump=false).
      */
     public function getPump(): MessagePump
     {
@@ -837,8 +1102,6 @@ class Client
 
         $this->ensureTlParser();
 
-        // Runtime injected by ClientManager from the container (RULE 1); fall back
-        // to a Swoole runtime when used outside a booted app.
         $this->runtime ??= new SwooleRuntime();
 
         $this->pump = new MessagePump(
@@ -856,7 +1119,7 @@ class Client
         if ($this->deviceProfile !== null) {
             $this->pump->setDeviceProfile($this->deviceProfile);
         }
-        $this->pump->setReconnector(fn (): ConnectionInterface => $this->reconnectForPump());
+        $this->pump->setReconnector(fn(): ConnectionInterface => $this->reconnectForPump());
 
         return $this->pump;
     }
@@ -864,8 +1127,6 @@ class Client
     /**
      * Start the pump's reader/keep-alive coroutines and initialise the
      * connection through it. MUST run inside Swoole\Coroutine\run.
-     *
-     * After this, invoke() automatically routes through the pump.
      */
     public function startPump(): MessagePump
     {
@@ -885,7 +1146,7 @@ class Client
      */
     private function reconnectForPump(): ConnectionInterface
     {
-        $this->connection = new SyncConnection();
+        $this->connection = $this->makeConnection();
         $this->connectTcp();
         $this->session->regenerateSessionId();
 
@@ -897,11 +1158,18 @@ class Client
      */
     private function connectTcp(): void
     {
-        $addr = DataCenter::getAddress($this->dcId, $this->testMode, $this->ipv6);
-        $this->connection->connect($addr, DataCenter::DEFAULT_PORT, $this->timeout);
-        $init = $this->transport->getInitialBytes();
-        if ($init !== '') {
-            $this->connection->send($init);
+        if ($this->proxy !== null) {
+            $this->connection->connect($this->proxy->host(), $this->proxy->port(), $this->timeout);
+        } else {
+            $addr = DataCenter::getAddress($this->dcId, $this->testMode, $this->ipv6);
+            $this->connection->connect($addr, DataCenter::DEFAULT_PORT, $this->timeout);
+        }
+
+        if (!$this->obfuscated) {
+            $init = $this->transport->getInitialBytes();
+            if ($init !== '') {
+                $this->connection->send($init);
+            }
         }
     }
 
@@ -918,11 +1186,10 @@ class Client
             $this->testMode,
         );
         $result = $gen->generate();
+        $this->freshAuthKey = true;
         $this->session->setAuthKey($result['auth_key']);
         $this->session->setServerSalt($result['server_salt']);
         $this->session->setDcId($this->dcId);
-        // Persist the server time offset so msg_id time-window validation and
-        // msg_id generation stay correct even on a clock-skewed host.
         $this->session->setTimeDelta($result['time_delta']);
     }
 

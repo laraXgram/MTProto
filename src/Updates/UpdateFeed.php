@@ -5,31 +5,15 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Updates;
 
 use LaraGram\MTProto\Core\Client;
-use LaraGram\MTProto\Contracts\EventLoopInterface;
 use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\Generated\Types\Message;
 use LaraGram\MTProto\Generated\Types\Update;
 use LaraGram\MTProto\TL\TLObject;
 
-/**
- * Core update feed — processes raw Updates containers from the socket,
- * handles gap detection, difference fetching, state management, and
- * dispatches individual Update objects to registered handlers.
- *
- * Every dispatched update is wrapped in a TLObject so the consumer gets
- * property-based access:  $update->message->text, $update->message->from_id, etc.
- */
 class UpdateFeed
 {
-    private Client      $client;
+    private Client $client;
     private UpdateState $state;
-
-    /**
-     * Event loop driver for non-blocking handler dispatch.
-     * On amphp/swoole, handlers run in separate fibers/coroutines
-     * so that sleep() or blocking RPC calls don't freeze the loop.
-     */
-    private ?EventLoopInterface $eventLoop = null;
 
     private ?Runtime $runtime = null;
 
@@ -42,7 +26,7 @@ class UpdateFeed
     private $onUpdate = null;
 
     /**
-     * Named event callbacks: event_name → callable[]
+     * Named event callbacks: event_name -> callable[]
      * @var array<string, callable[]>
      */
     private array $listeners = [];
@@ -58,21 +42,25 @@ class UpdateFeed
      */
     private array $postponed = [];
 
+    /**
+     * Channels currently fetching a channel difference (single-flight guard).
+     * @var array<int, bool>
+     */
+    private array $fetchingChannelDifference = [];
+
+    /**
+     * Postponed updates per channel while that channel's difference is fetching.
+     * @var array<int, array[]>
+     */
+    private array $channelPostponed = [];
+
     private ?\LaraGram\Log\LoggerInterface $logger;
 
     public function __construct(Client $client, UpdateState $state)
     {
         $this->client = $client;
-        $this->state  = $state;
+        $this->state = $state;
         $this->logger = $client->getLogger();
-    }
-
-    /**
-     * Inject the event loop driver for non-blocking handler dispatch.
-     */
-    public function setEventLoop(EventLoopInterface $eventLoop): void
-    {
-        $this->eventLoop = $eventLoop;
     }
 
     public function setRuntime(Runtime $runtime): void
@@ -81,9 +69,7 @@ class UpdateFeed
     }
 
     /**
-     * Run a handler in its own coroutine when a runtime is available, so a
-     * blocking sleep()/RPC inside it never freezes the reader; falls back to the
-     * legacy event-loop queue, then to inline execution.
+     * Run a handler in its own coroutine when a runtime is available.
      */
     private function runHandler(callable $run): void
     {
@@ -92,17 +78,8 @@ class UpdateFeed
             return;
         }
 
-        if ($this->eventLoop !== null) {
-            $this->eventLoop->queueCallback($run);
-            return;
-        }
-
         $run();
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Public API
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Register the main update handler.
@@ -116,39 +93,6 @@ class UpdateFeed
 
     /**
      * Register a handler for a specific event type.
-     *
-     * Supported built-in semantic events:
-     *   'message', 'editedMessage', 'deletedMessages', 'messageId',
-     *   'pinnedMessages', 'readContents', 'messageViews', 'messageForwards',
-     *   'messageExtendedMedia', 'transcribedAudio', 'geoLiveViewed',
-     *   'scheduledMessage', 'deleteScheduled',
-     *   'poll', 'pollVote', 'webPage',
-     *   'readHistory', 'readDiscussion',
-     *   'callbackQuery', 'inlineQuery', 'chosenInlineResult',
-     *   'typing', 'reactions',
-     *   'userStatus', 'userName', 'userPhone', 'userEmojiStatus', 'userUpdate',
-     *   'chatParticipant', 'chatParticipants', 'chatParticipantAdd',
-     *   'chatParticipantDelete', 'chatParticipantAdmin', 'chatDefaultBanned',
-     *   'chatUpdate', 'channelUpdate', 'channelTooLong', 'channelAvailableMessages',
-     *   'precheckoutQuery', 'shippingQuery',
-     *   'phoneCall', 'phoneCallSignaling',
-     *   'groupCall', 'groupCallParticipants', 'groupCallConnection',
-     *   'story', 'readStories', 'storyId', 'storiesStealthMode', 'storyReaction',
-     *   'encryptedMessage', 'encryptedChatTyping', 'encryption', 'encryptedRead',
-     *   'draft', 'notifySettings', 'serviceNotification', 'privacy',
-     *   'dialogPinned', 'pinnedDialogs', 'dialogUnreadMark', 'dialogFilter',
-     *   'botStopped', 'botCommands', 'botMenu', 'chatJoinRequest', 'chatBoost',
-     *   'botReaction', 'botReactions',
-     *   'botBusinessConnect', 'botBusinessMessage', 'botBusinessEdit', 'botBusinessDelete',
-     *   'peerSettings', 'peerBlocked', 'peerLocated',
-     *   'newAuthorization', 'loginToken',
-     *   'starsBalance', 'starsRevenue',
-     *   'config', 'dcOptions', 'theme',
-     *   'sentMessage', 'error',
-     *   '*' (wildcard — fires for every update)
-     *
-     * You can also listen to raw constructor names:
-     *   'updateNewMessage', 'updateNewChannelMessage', etc.
      */
     public function on(string $event, callable $callback): void
     {
@@ -170,13 +114,8 @@ class UpdateFeed
         }
     }
 
-    // ── Typed convenience listeners ────────────────────────────────────
-
     /**
      * Listen for new messages (user/group/channel).
-     *
-     * The callback receives a fully-typed Message object with IDE auto-complete
-     * for all properties (id, peer_id, from_id, date, message, media, entities, etc.).
      *
      * @param callable(Message, Client): void $callback
      */
@@ -447,10 +386,6 @@ class UpdateFeed
 
     /**
      * Initialise/refresh state from server.
-     *
-     * Always re-syncs with the server so that stale pts/seq values from
-     * a previous run don't cause false gap detection (which would trigger
-     * blocking fetchDifference calls and lose updates).
      */
     public function initialise(): void
     {
@@ -467,34 +402,26 @@ class UpdateFeed
         return $this->state;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Feed entry-point — receives raw Updates container from socket
-    // ════════════════════════════════════════════════════════════════════
-
     /**
      * Process a raw Updates container received from the socket.
      *
-     * @param array $data  Deserialized TL Updates object (has '_' key).
+     * @param array $data Deserialized TL Updates object (has '_' key).
      */
     public function feed(array $data): void
     {
         $type = $data['_'] ?? '';
 
         match ($type) {
-            'updates'              => $this->handleUpdates($data),
-            'updatesCombined'      => $this->handleUpdatesCombined($data),
-            'updateShort'          => $this->handleUpdateShort($data),
-            'updateShortMessage'   => $this->handleUpdateShortMessage($data),
+            'updates' => $this->handleUpdates($data),
+            'updatesCombined' => $this->handleUpdatesCombined($data),
+            'updateShort' => $this->handleUpdateShort($data),
+            'updateShortMessage' => $this->handleUpdateShortMessage($data),
             'updateShortChatMessage' => $this->handleUpdateShortChatMessage($data),
             'updateShortSentMessage' => $this->handleUpdateShortSentMessage($data),
-            'updatesTooLong'       => $this->fetchDifference(),
-            default                => null, // Ignore unknown containers
+            'updatesTooLong' => $this->fetchDifference(),
+            default => null, // Ignore unknown containers
         };
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Container handlers
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * updates#74ae4240
@@ -503,19 +430,14 @@ class UpdateFeed
     {
         $seq = $data['seq'] ?? 0;
 
-        // seq-based ordering check (skip obvious duplicates only)
         if ($seq > 0 && $this->state->getSeq() > 0) {
             if ($seq <= $this->state->getSeq()) {
-                return; // Duplicate — we already processed this seq
+                return;
             }
-            // If seq is ahead (gap), we still process the update
-            // to avoid losing it. State will be corrected later.
         }
 
-        // Cache entities
         $this->cacheEntities($data);
 
-        // Update seq/date
         if ($seq > 0) {
             $this->state->setSeq($seq);
         }
@@ -523,7 +445,6 @@ class UpdateFeed
             $this->state->setDate(max($this->state->getDate(), $data['date']));
         }
 
-        // Process each update
         foreach ($data['updates'] ?? [] as $update) {
             $this->processUpdate($update);
         }
@@ -540,16 +461,15 @@ class UpdateFeed
 
         if ($seqStart > 0 && $this->state->getSeq() > 0) {
             if ($seqStart <= $this->state->getSeq()) {
-                return; // Duplicate
+                return;
             }
         }
 
-        // Same logic as updates
         $this->handleUpdates($data);
     }
 
     /**
-     * updateShort#78d4dec1 — single stateless update
+     * updateShort#78d4dec1 - single stateless update
      */
     private function handleUpdateShort(array $data): void
     {
@@ -562,87 +482,101 @@ class UpdateFeed
     }
 
     /**
-     * updateShortMessage#313bc7f8 — incoming DM, convert to full message
+     * updateShortMessage#313bc7f8 - incoming DM, convert to full message
      */
     private function handleUpdateShortMessage(array $data): void
     {
         $message = $this->shortMessageToFull($data, isChat: false);
         $this->processUpdate([
-            '_'         => 'updateNewMessage',
-            'message'   => $message,
-            'pts'       => $data['pts'],
+            '_' => 'updateNewMessage',
+            'message' => $message,
+            'pts' => $data['pts'],
             'pts_count' => $data['pts_count'],
         ]);
         $this->state->save();
     }
 
     /**
-     * updateShortChatMessage#4d6deea5 — incoming group message
+     * updateShortChatMessage#4d6deea5 - incoming group message
      */
     private function handleUpdateShortChatMessage(array $data): void
     {
         $message = $this->shortMessageToFull($data, isChat: true);
         $this->processUpdate([
-            '_'         => 'updateNewMessage',
-            'message'   => $message,
-            'pts'       => $data['pts'],
+            '_' => 'updateNewMessage',
+            'message' => $message,
+            'pts' => $data['pts'],
             'pts_count' => $data['pts_count'],
         ]);
         $this->state->save();
     }
 
     /**
-     * updateShortSentMessage — our own sent message confirmed
+     * updateShortSentMessage - our own sent message confirmed
      */
     private function handleUpdateShortSentMessage(array $data): void
     {
         $this->dispatchEvent('sentMessage', TLObject::fromArray($data));
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Individual update processing
-    // ════════════════════════════════════════════════════════════════════
-
     /**
      * Process a single Update constructor.
-     *
-     * Skips obvious duplicates (pts we've already seen) but always
-     * delivers new updates — never triggers blocking RPC from here.
      */
     private function processUpdate(array $update): void
     {
         $type = $update['_'] ?? '';
 
-        // ── pts-based update ───────────────────────────────────────────
+        if ($type === 'updateChannelTooLong') {
+            $channelId = (int)($update['channel_id'] ?? 0);
+            if ($channelId > 0) {
+                if ($this->state->getChannelPts($channelId) > 0) {
+                    $this->fetchChannelDifference($channelId);
+                } elseif (isset($update['pts'])) {
+                    $this->state->setChannelPts($channelId, (int)$update['pts']);
+                    $this->state->save();
+                }
+            }
+            $this->dispatch($update);
+            return;
+        }
+
         if (isset($update['pts']) && $update['pts'] > 0) {
-            $ptsCount  = $update['pts_count'] ?? 0;
+            $ptsCount = $update['pts_count'] ?? 0;
             $channelId = $this->extractChannelId($update);
 
             if ($channelId !== null) {
-                $currentPts = $this->state->getChannelPts($channelId);
-                if ($currentPts > 0 && $update['pts'] <= $currentPts) {
-                    return; // Duplicate — already seen
+                $gap = $this->state->checkChannelPtsGap($channelId, $update['pts'], $ptsCount);
+                if ($gap > 0) {
+                    return;
+                }
+                if ($gap < 0) {
+                    $this->channelPostponed[$channelId][] = $update;
+                    $this->fetchChannelDifference($channelId);
+                    return;
                 }
                 $this->state->setChannelPts($channelId, $update['pts']);
             } else {
-                $currentPts = $this->state->getPts();
-                if ($currentPts > 0 && $update['pts'] <= $currentPts) {
-                    return; // Duplicate — already seen
+                $gap = $this->state->checkPtsGap($update['pts'], $ptsCount);
+                if ($gap > 0) {
+                    return;
+                }
+                if ($gap < 0) {
+                    $this->postponed[] = $update;
+                    $this->fetchDifference();
+                    return;
                 }
                 $this->state->setPts($update['pts']);
             }
         }
 
-        // ── qts-based update ───────────────────────────────────────────
         if (isset($update['qts']) && $update['qts'] > 0) {
             $currentQts = $this->state->getQts();
             if ($currentQts > 0 && $update['qts'] <= $currentQts) {
-                return; // Duplicate
+                return;
             }
             $this->state->setQts($update['qts']);
         }
 
-        // ── Wrap and dispatch ──────────────────────────────────────────
         $this->dispatch($update);
     }
 
@@ -651,33 +585,22 @@ class UpdateFeed
      */
     private function dispatch(array $update): void
     {
-        $type    = $update['_'] ?? 'unknown';
+        $type = $update['_'] ?? 'unknown';
         $wrapped = TLObject::fromArray($update);
 
-        // ── Filter out outgoing messages (echo-loop prevention) ────────
-        // When a handler sends a message via $client->sendMessage(), the
-        // server delivers it back as an update with out=true. Without this
-        // filter, the handler would trigger on its own outgoing messages,
-        // causing an infinite echo loop: send → receive → send → …
         if ($this->isOutgoingMessage($update)) {
             return;
         }
 
-        // 1. Main handler (non-blocking on async drivers)
         if ($this->onUpdate !== null) {
             $handler = $this->onUpdate;
-            $isFork  = $this->eventLoop !== null && $this->eventLoop->getName() === 'fork';
-            $client  = $this->client;
 
-            $run = function () use ($handler, $wrapped, $type, $client, $isFork): void {
+            $run = function () use ($handler, $wrapped, $type): void {
                 try {
-                    if ($isFork) {
-                        $client->reconnect();
-                    }
                     $handler($wrapped, $type);
                 } catch (\Throwable $e) {
                     $this->dispatchEvent('error', TLObject::fromArray([
-                        '_'     => 'error',
+                        '_' => 'error',
                         'event' => $type,
                         'error' => $e->getMessage(),
                         'trace' => $e->getTraceAsString(),
@@ -688,214 +611,212 @@ class UpdateFeed
             $this->runHandler($run);
         }
 
-        // 2. Specific raw-constructor listeners
         $this->dispatchEvent($type, $wrapped);
 
-        // 3. Semantic aliases — map raw constructors to friendly event names
         match ($type) {
             // ── Messages ───────────────────────────────────────────────
             'updateNewMessage',
-            'updateNewChannelMessage'           => $this->dispatchEvent('message', $this->extractMessage($wrapped)),
+            'updateNewChannelMessage' => $this->dispatchEvent('message', $this->extractMessage($wrapped)),
 
             'updateEditMessage',
-            'updateEditChannelMessage'          => $this->dispatchEvent('editedMessage', $this->extractMessage($wrapped)),
+            'updateEditChannelMessage' => $this->dispatchEvent('editedMessage', $this->extractMessage($wrapped)),
 
             'updateDeleteMessages',
-            'updateDeleteChannelMessages'       => $this->dispatchEvent('deletedMessages', $wrapped),
+            'updateDeleteChannelMessages' => $this->dispatchEvent('deletedMessages', $wrapped),
 
-            'updateMessageID'                   => $this->dispatchEvent('messageId', $wrapped),
+            'updateMessageID' => $this->dispatchEvent('messageId', $wrapped),
 
             'updatePinnedMessages',
-            'updatePinnedChannelMessages'       => $this->dispatchEvent('pinnedMessages', $wrapped),
+            'updatePinnedChannelMessages' => $this->dispatchEvent('pinnedMessages', $wrapped),
 
             'updateReadMessagesContents',
             'updateChannelReadMessagesContents' => $this->dispatchEvent('readContents', $wrapped),
 
-            'updateChannelMessageViews'         => $this->dispatchEvent('messageViews', $wrapped),
-            'updateChannelMessageForwards'      => $this->dispatchEvent('messageForwards', $wrapped),
-            'updateMessageExtendedMedia'        => $this->dispatchEvent('messageExtendedMedia', $wrapped),
-            'updateTranscribedAudio'            => $this->dispatchEvent('transcribedAudio', $wrapped),
-            'updateGeoLiveViewed'               => $this->dispatchEvent('geoLiveViewed', $wrapped),
+            'updateChannelMessageViews' => $this->dispatchEvent('messageViews', $wrapped),
+            'updateChannelMessageForwards' => $this->dispatchEvent('messageForwards', $wrapped),
+            'updateMessageExtendedMedia' => $this->dispatchEvent('messageExtendedMedia', $wrapped),
+            'updateTranscribedAudio' => $this->dispatchEvent('transcribedAudio', $wrapped),
+            'updateGeoLiveViewed' => $this->dispatchEvent('geoLiveViewed', $wrapped),
 
-            'updateNewScheduledMessage'         => $this->dispatchEvent('scheduledMessage', $wrapped),
-            'updateDeleteScheduledMessages'     => $this->dispatchEvent('deleteScheduled', $wrapped),
+            'updateNewScheduledMessage' => $this->dispatchEvent('scheduledMessage', $wrapped),
+            'updateDeleteScheduledMessages' => $this->dispatchEvent('deleteScheduled', $wrapped),
 
             // ── Polls ──────────────────────────────────────────────────
-            'updateMessagePoll'                 => $this->dispatchEvent('poll', $wrapped),
-            'updateMessagePollVote'             => $this->dispatchEvent('pollVote', $wrapped),
+            'updateMessagePoll' => $this->dispatchEvent('poll', $wrapped),
+            'updateMessagePollVote' => $this->dispatchEvent('pollVote', $wrapped),
 
             // ── Web pages ──────────────────────────────────────────────
             'updateWebPage',
-            'updateChannelWebPage'              => $this->dispatchEvent('webPage', $wrapped),
+            'updateChannelWebPage' => $this->dispatchEvent('webPage', $wrapped),
 
             // ── Read history ───────────────────────────────────────────
             'updateReadHistoryInbox',
             'updateReadHistoryOutbox',
             'updateReadChannelInbox',
-            'updateReadChannelOutbox'           => $this->dispatchEvent('readHistory', $wrapped),
+            'updateReadChannelOutbox' => $this->dispatchEvent('readHistory', $wrapped),
 
             'updateReadChannelDiscussionInbox',
             'updateReadChannelDiscussionOutbox' => $this->dispatchEvent('readDiscussion', $wrapped),
 
             // ── Callback / Inline ──────────────────────────────────────
             'updateBotCallbackQuery',
-            'updateInlineBotCallbackQuery'      => $this->dispatchEvent('callbackQuery', $wrapped),
+            'updateInlineBotCallbackQuery' => $this->dispatchEvent('callbackQuery', $wrapped),
 
-            'updateBotInlineQuery'              => $this->dispatchEvent('inlineQuery', $wrapped),
-            'updateBotInlineSend'               => $this->dispatchEvent('chosenInlineResult', $wrapped),
+            'updateBotInlineQuery' => $this->dispatchEvent('inlineQuery', $wrapped),
+            'updateBotInlineSend' => $this->dispatchEvent('chosenInlineResult', $wrapped),
 
             // ── Typing ─────────────────────────────────────────────────
             'updateUserTyping',
             'updateChatUserTyping',
-            'updateChannelUserTyping'           => $this->dispatchEvent('typing', $wrapped),
+            'updateChannelUserTyping' => $this->dispatchEvent('typing', $wrapped),
 
             // ── Reactions ──────────────────────────────────────────────
-            'updateMessageReactions'            => $this->dispatchEvent('reactions', $wrapped),
+            'updateMessageReactions' => $this->dispatchEvent('reactions', $wrapped),
 
             // ── Users ──────────────────────────────────────────────────
-            'updateUserStatus'                  => $this->dispatchEvent('userStatus', $wrapped),
-            'updateUserName'                    => $this->dispatchEvent('userName', $wrapped),
-            'updateUserPhone'                   => $this->dispatchEvent('userPhone', $wrapped),
-            'updateUserEmojiStatus'             => $this->dispatchEvent('userEmojiStatus', $wrapped),
-            'updateUser'                        => $this->dispatchEvent('userUpdate', $wrapped),
+            'updateUserStatus' => $this->dispatchEvent('userStatus', $wrapped),
+            'updateUserName' => $this->dispatchEvent('userName', $wrapped),
+            'updateUserPhone' => $this->dispatchEvent('userPhone', $wrapped),
+            'updateUserEmojiStatus' => $this->dispatchEvent('userEmojiStatus', $wrapped),
+            'updateUser' => $this->dispatchEvent('userUpdate', $wrapped),
 
             // ── Chats / Channels ───────────────────────────────────────
             'updateChatParticipant',
-            'updateChannelParticipant'          => $this->dispatchEvent('chatParticipant', $wrapped),
+            'updateChannelParticipant' => $this->dispatchEvent('chatParticipant', $wrapped),
 
-            'updateChatParticipants'            => $this->dispatchEvent('chatParticipants', $wrapped),
-            'updateChatParticipantAdd'          => $this->dispatchEvent('chatParticipantAdd', $wrapped),
-            'updateChatParticipantDelete'       => $this->dispatchEvent('chatParticipantDelete', $wrapped),
-            'updateChatParticipantAdmin'        => $this->dispatchEvent('chatParticipantAdmin', $wrapped),
-            'updateChatDefaultBannedRights'     => $this->dispatchEvent('chatDefaultBanned', $wrapped),
-            'updateChat'                        => $this->dispatchEvent('chatUpdate', $wrapped),
-            'updateChannel'                     => $this->dispatchEvent('channelUpdate', $wrapped),
-            'updateChannelTooLong'              => $this->dispatchEvent('channelTooLong', $wrapped),
-            'updateChannelAvailableMessages'    => $this->dispatchEvent('channelAvailableMessages', $wrapped),
-            'updateChannelViewForumAsMessages'  => $this->dispatchEvent('channelViewForumAsMessages', $wrapped),
+            'updateChatParticipants' => $this->dispatchEvent('chatParticipants', $wrapped),
+            'updateChatParticipantAdd' => $this->dispatchEvent('chatParticipantAdd', $wrapped),
+            'updateChatParticipantDelete' => $this->dispatchEvent('chatParticipantDelete', $wrapped),
+            'updateChatParticipantAdmin' => $this->dispatchEvent('chatParticipantAdmin', $wrapped),
+            'updateChatDefaultBannedRights' => $this->dispatchEvent('chatDefaultBanned', $wrapped),
+            'updateChat' => $this->dispatchEvent('chatUpdate', $wrapped),
+            'updateChannel' => $this->dispatchEvent('channelUpdate', $wrapped),
+            'updateChannelTooLong' => $this->dispatchEvent('channelTooLong', $wrapped),
+            'updateChannelAvailableMessages' => $this->dispatchEvent('channelAvailableMessages', $wrapped),
+            'updateChannelViewForumAsMessages' => $this->dispatchEvent('channelViewForumAsMessages', $wrapped),
 
             // ── Payments ───────────────────────────────────────────────
-            'updateBotPrecheckoutQuery'         => $this->dispatchEvent('precheckoutQuery', $wrapped),
-            'updateBotShippingQuery'            => $this->dispatchEvent('shippingQuery', $wrapped),
+            'updateBotPrecheckoutQuery' => $this->dispatchEvent('precheckoutQuery', $wrapped),
+            'updateBotShippingQuery' => $this->dispatchEvent('shippingQuery', $wrapped),
 
             // ── Phone calls ────────────────────────────────────────────
-            'updatePhoneCall'                   => $this->dispatchEvent('phoneCall', $wrapped),
-            'updatePhoneCallSignalingData'      => $this->dispatchEvent('phoneCallSignaling', $wrapped),
+            'updatePhoneCall' => $this->dispatchEvent('phoneCall', $wrapped),
+            'updatePhoneCallSignalingData' => $this->dispatchEvent('phoneCallSignaling', $wrapped),
 
             // ── Group calls ────────────────────────────────────────────
-            'updateGroupCall'                   => $this->dispatchEvent('groupCall', $wrapped),
-            'updateGroupCallParticipants'       => $this->dispatchEvent('groupCallParticipants', $wrapped),
-            'updateGroupCallConnection'         => $this->dispatchEvent('groupCallConnection', $wrapped),
+            'updateGroupCall' => $this->dispatchEvent('groupCall', $wrapped),
+            'updateGroupCallParticipants' => $this->dispatchEvent('groupCallParticipants', $wrapped),
+            'updateGroupCallConnection' => $this->dispatchEvent('groupCallConnection', $wrapped),
 
             // ── Stories ────────────────────────────────────────────────
-            'updateStory'                       => $this->dispatchEvent('story', $wrapped),
-            'updateReadStories'                 => $this->dispatchEvent('readStories', $wrapped),
-            'updateStoryID'                     => $this->dispatchEvent('storyId', $wrapped),
-            'updateStoriesStealthMode'          => $this->dispatchEvent('storiesStealthMode', $wrapped),
+            'updateStory' => $this->dispatchEvent('story', $wrapped),
+            'updateReadStories' => $this->dispatchEvent('readStories', $wrapped),
+            'updateStoryID' => $this->dispatchEvent('storyId', $wrapped),
+            'updateStoriesStealthMode' => $this->dispatchEvent('storiesStealthMode', $wrapped),
             'updateSentStoryReaction',
-            'updateNewStoryReaction'            => $this->dispatchEvent('storyReaction', $wrapped),
+            'updateNewStoryReaction' => $this->dispatchEvent('storyReaction', $wrapped),
 
             // ── Encrypted (Secret chats) ───────────────────────────────
-            'updateNewEncryptedMessage'         => $this->dispatchEvent('encryptedMessage', $wrapped),
-            'updateEncryptedChatTyping'         => $this->dispatchEvent('encryptedChatTyping', $wrapped),
-            'updateEncryption'                  => $this->dispatchEvent('encryption', $wrapped),
-            'updateEncryptedMessagesRead'       => $this->dispatchEvent('encryptedRead', $wrapped),
+            'updateNewEncryptedMessage' => $this->dispatchEvent('encryptedMessage', $wrapped),
+            'updateEncryptedChatTyping' => $this->dispatchEvent('encryptedChatTyping', $wrapped),
+            'updateEncryption' => $this->dispatchEvent('encryption', $wrapped),
+            'updateEncryptedMessagesRead' => $this->dispatchEvent('encryptedRead', $wrapped),
 
             // ── Drafts ─────────────────────────────────────────────────
-            'updateDraftMessage'                => $this->dispatchEvent('draft', $wrapped),
+            'updateDraftMessage' => $this->dispatchEvent('draft', $wrapped),
 
             // ── Notifications & Settings ───────────────────────────────
-            'updateNotifySettings'              => $this->dispatchEvent('notifySettings', $wrapped),
-            'updateServiceNotification'         => $this->dispatchEvent('serviceNotification', $wrapped),
-            'updatePrivacy'                     => $this->dispatchEvent('privacy', $wrapped),
+            'updateNotifySettings' => $this->dispatchEvent('notifySettings', $wrapped),
+            'updateServiceNotification' => $this->dispatchEvent('serviceNotification', $wrapped),
+            'updatePrivacy' => $this->dispatchEvent('privacy', $wrapped),
 
             // ── Dialogs & Folders ──────────────────────────────────────
-            'updateDialogPinned'                => $this->dispatchEvent('dialogPinned', $wrapped),
-            'updatePinnedDialogs'               => $this->dispatchEvent('pinnedDialogs', $wrapped),
-            'updateDialogUnreadMark'            => $this->dispatchEvent('dialogUnreadMark', $wrapped),
-            'updateDialogFilter'                => $this->dispatchEvent('dialogFilter', $wrapped),
-            'updateDialogFilterOrder'           => $this->dispatchEvent('dialogFilterOrder', $wrapped),
-            'updateDialogFilters'               => $this->dispatchEvent('dialogFilters', $wrapped),
-            'updateFolderPeers'                 => $this->dispatchEvent('folderPeers', $wrapped),
-            'updateSavedDialogPinned'           => $this->dispatchEvent('savedDialogPinned', $wrapped),
-            'updatePinnedSavedDialogs'          => $this->dispatchEvent('pinnedSavedDialogs', $wrapped),
+            'updateDialogPinned' => $this->dispatchEvent('dialogPinned', $wrapped),
+            'updatePinnedDialogs' => $this->dispatchEvent('pinnedDialogs', $wrapped),
+            'updateDialogUnreadMark' => $this->dispatchEvent('dialogUnreadMark', $wrapped),
+            'updateDialogFilter' => $this->dispatchEvent('dialogFilter', $wrapped),
+            'updateDialogFilterOrder' => $this->dispatchEvent('dialogFilterOrder', $wrapped),
+            'updateDialogFilters' => $this->dispatchEvent('dialogFilters', $wrapped),
+            'updateFolderPeers' => $this->dispatchEvent('folderPeers', $wrapped),
+            'updateSavedDialogPinned' => $this->dispatchEvent('savedDialogPinned', $wrapped),
+            'updatePinnedSavedDialogs' => $this->dispatchEvent('pinnedSavedDialogs', $wrapped),
 
             // ── Bots ───────────────────────────────────────────────────
-            'updateBotStopped'                  => $this->dispatchEvent('botStopped', $wrapped),
-            'updateBotCommands'                 => $this->dispatchEvent('botCommands', $wrapped),
-            'updateBotMenuButton'               => $this->dispatchEvent('botMenu', $wrapped),
-            'updateBotChatInviteRequester'      => $this->dispatchEvent('chatJoinRequest', $wrapped),
-            'updateBotChatBoost'                => $this->dispatchEvent('chatBoost', $wrapped),
-            'updateBotMessageReaction'          => $this->dispatchEvent('botReaction', $wrapped),
-            'updateBotMessageReactions'         => $this->dispatchEvent('botReactions', $wrapped),
-            'updateBotPurchasedPaidMedia'       => $this->dispatchEvent('botPurchasedPaid', $wrapped),
-            'updateBotWebhookJSON'              => $this->dispatchEvent('botWebhook', $wrapped),
-            'updateBotWebhookJSONQuery'         => $this->dispatchEvent('botWebhookQuery', $wrapped),
-            'updateWebViewResultSent'           => $this->dispatchEvent('webviewResultSent', $wrapped),
-            'updateAttachMenuBots'              => $this->dispatchEvent('attachMenuBots', $wrapped),
+            'updateBotStopped' => $this->dispatchEvent('botStopped', $wrapped),
+            'updateBotCommands' => $this->dispatchEvent('botCommands', $wrapped),
+            'updateBotMenuButton' => $this->dispatchEvent('botMenu', $wrapped),
+            'updateBotChatInviteRequester' => $this->dispatchEvent('chatJoinRequest', $wrapped),
+            'updateBotChatBoost' => $this->dispatchEvent('chatBoost', $wrapped),
+            'updateBotMessageReaction' => $this->dispatchEvent('botReaction', $wrapped),
+            'updateBotMessageReactions' => $this->dispatchEvent('botReactions', $wrapped),
+            'updateBotPurchasedPaidMedia' => $this->dispatchEvent('botPurchasedPaid', $wrapped),
+            'updateBotWebhookJSON' => $this->dispatchEvent('botWebhook', $wrapped),
+            'updateBotWebhookJSONQuery' => $this->dispatchEvent('botWebhookQuery', $wrapped),
+            'updateWebViewResultSent' => $this->dispatchEvent('webviewResultSent', $wrapped),
+            'updateAttachMenuBots' => $this->dispatchEvent('attachMenuBots', $wrapped),
 
             // ── Bot Business ───────────────────────────────────────────
-            'updateBotBusinessConnect'          => $this->dispatchEvent('botBusinessConnect', $wrapped),
-            'updateBotNewBusinessMessage'       => $this->dispatchEvent('botBusinessMessage', $wrapped),
-            'updateBotEditBusinessMessage'      => $this->dispatchEvent('botBusinessEdit', $wrapped),
-            'updateBotDeleteBusinessMessage'    => $this->dispatchEvent('botBusinessDelete', $wrapped),
-            'updateBusinessBotCallbackQuery'    => $this->dispatchEvent('businessCallback', $wrapped),
+            'updateBotBusinessConnect' => $this->dispatchEvent('botBusinessConnect', $wrapped),
+            'updateBotNewBusinessMessage' => $this->dispatchEvent('botBusinessMessage', $wrapped),
+            'updateBotEditBusinessMessage' => $this->dispatchEvent('botBusinessEdit', $wrapped),
+            'updateBotDeleteBusinessMessage' => $this->dispatchEvent('botBusinessDelete', $wrapped),
+            'updateBusinessBotCallbackQuery' => $this->dispatchEvent('businessCallback', $wrapped),
 
             // ── Stickers & Emoji ───────────────────────────────────────
-            'updateNewStickerSet'               => $this->dispatchEvent('newStickerSet', $wrapped),
+            'updateNewStickerSet' => $this->dispatchEvent('newStickerSet', $wrapped),
             'updateStickerSetsOrder',
-            'updateMoveStickerSetToTop'         => $this->dispatchEvent('stickerSetsOrder', $wrapped),
-            'updateStickerSets'                 => $this->dispatchEvent('stickerSets', $wrapped),
-            'updateSavedGifs'                   => $this->dispatchEvent('savedGifs', $wrapped),
-            'updateFavedStickers'               => $this->dispatchEvent('favedStickers', $wrapped),
+            'updateMoveStickerSetToTop' => $this->dispatchEvent('stickerSetsOrder', $wrapped),
+            'updateStickerSets' => $this->dispatchEvent('stickerSets', $wrapped),
+            'updateSavedGifs' => $this->dispatchEvent('savedGifs', $wrapped),
+            'updateFavedStickers' => $this->dispatchEvent('favedStickers', $wrapped),
             'updateRecentStickers',
             'updateReadFeaturedStickers',
             'updateReadFeaturedEmojiStickers',
             'updateRecentEmojiStatuses',
             'updateRecentReactions',
             'updateSavedReactionTags',
-            'updateSavedRingtones'              => $this->dispatchEvent('recentStickers', $wrapped),
+            'updateSavedRingtones' => $this->dispatchEvent('recentStickers', $wrapped),
 
             // ── Forum Topics ───────────────────────────────────────────
-            'updatePinnedForumTopic'            => $this->dispatchEvent('pinnedForumTopic', $wrapped),
-            'updatePinnedForumTopics'           => $this->dispatchEvent('pinnedForumTopics', $wrapped),
+            'updatePinnedForumTopic' => $this->dispatchEvent('pinnedForumTopic', $wrapped),
+            'updatePinnedForumTopics' => $this->dispatchEvent('pinnedForumTopics', $wrapped),
 
             // ── Peers ──────────────────────────────────────────────────
-            'updatePeerSettings'                => $this->dispatchEvent('peerSettings', $wrapped),
-            'updatePeerLocated'                 => $this->dispatchEvent('peerLocated', $wrapped),
-            'updatePeerBlocked'                 => $this->dispatchEvent('peerBlocked', $wrapped),
-            'updatePeerHistoryTTL'              => $this->dispatchEvent('peerHistoryTTL', $wrapped),
-            'updatePeerWallpaper'               => $this->dispatchEvent('peerWallpaper', $wrapped),
-            'updateContactsReset'               => $this->dispatchEvent('contactsReset', $wrapped),
-            'updatePendingJoinRequests'         => $this->dispatchEvent('pendingJoinRequests', $wrapped),
+            'updatePeerSettings' => $this->dispatchEvent('peerSettings', $wrapped),
+            'updatePeerLocated' => $this->dispatchEvent('peerLocated', $wrapped),
+            'updatePeerBlocked' => $this->dispatchEvent('peerBlocked', $wrapped),
+            'updatePeerHistoryTTL' => $this->dispatchEvent('peerHistoryTTL', $wrapped),
+            'updatePeerWallpaper' => $this->dispatchEvent('peerWallpaper', $wrapped),
+            'updateContactsReset' => $this->dispatchEvent('contactsReset', $wrapped),
+            'updatePendingJoinRequests' => $this->dispatchEvent('pendingJoinRequests', $wrapped),
 
             // ── Auth & Security ────────────────────────────────────────
-            'updateNewAuthorization'            => $this->dispatchEvent('newAuthorization', $wrapped),
+            'updateNewAuthorization' => $this->dispatchEvent('newAuthorization', $wrapped),
             'updateLoginToken',
-            'updateSentPhoneCode'               => $this->dispatchEvent('loginToken', $wrapped),
+            'updateSentPhoneCode' => $this->dispatchEvent('loginToken', $wrapped),
 
             // ── Stars & Payments ───────────────────────────────────────
-            'updateStarsBalance'                => $this->dispatchEvent('starsBalance', $wrapped),
-            'updateStarsRevenueStatus'          => $this->dispatchEvent('starsRevenue', $wrapped),
-            'updatePaidReactionPrivacy'         => $this->dispatchEvent('paidReactionPrivacy', $wrapped),
+            'updateStarsBalance' => $this->dispatchEvent('starsBalance', $wrapped),
+            'updateStarsRevenueStatus' => $this->dispatchEvent('starsRevenue', $wrapped),
+            'updatePaidReactionPrivacy' => $this->dispatchEvent('paidReactionPrivacy', $wrapped),
 
             // ── Quick Replies ──────────────────────────────────────────
-            'updateQuickReplies'                => $this->dispatchEvent('quickReplies', $wrapped),
-            'updateNewQuickReply'               => $this->dispatchEvent('newQuickReply', $wrapped),
-            'updateDeleteQuickReply'            => $this->dispatchEvent('deleteQuickReply', $wrapped),
-            'updateQuickReplyMessage'           => $this->dispatchEvent('quickReplyMessage', $wrapped),
-            'updateDeleteQuickReplyMessages'    => $this->dispatchEvent('deleteQuickReplyMessages', $wrapped),
+            'updateQuickReplies' => $this->dispatchEvent('quickReplies', $wrapped),
+            'updateNewQuickReply' => $this->dispatchEvent('newQuickReply', $wrapped),
+            'updateDeleteQuickReply' => $this->dispatchEvent('deleteQuickReply', $wrapped),
+            'updateQuickReplyMessage' => $this->dispatchEvent('quickReplyMessage', $wrapped),
+            'updateDeleteQuickReplyMessages' => $this->dispatchEvent('deleteQuickReplyMessages', $wrapped),
 
             // ── Config & System ────────────────────────────────────────
-            'updateConfig'                      => $this->dispatchEvent('config', $wrapped),
-            'updateDcOptions'                   => $this->dispatchEvent('dcOptions', $wrapped),
-            'updatePtsChanged'                  => $this->dispatchEvent('ptsChanged', $wrapped),
-            'updateLangPack'                    => $this->dispatchEvent('langPack', $wrapped),
-            'updateLangPackTooLong'             => $this->dispatchEvent('langPackTooLong', $wrapped),
-            'updateAutoSaveSettings'            => $this->dispatchEvent('autoSaveSettings', $wrapped),
+            'updateConfig' => $this->dispatchEvent('config', $wrapped),
+            'updateDcOptions' => $this->dispatchEvent('dcOptions', $wrapped),
+            'updatePtsChanged' => $this->dispatchEvent('ptsChanged', $wrapped),
+            'updateLangPack' => $this->dispatchEvent('langPack', $wrapped),
+            'updateLangPackTooLong' => $this->dispatchEvent('langPackTooLong', $wrapped),
+            'updateAutoSaveSettings' => $this->dispatchEvent('autoSaveSettings', $wrapped),
 
             // ── Themes ─────────────────────────────────────────────────
-            'updateTheme'                       => $this->dispatchEvent('theme', $wrapped),
+            'updateTheme' => $this->dispatchEvent('theme', $wrapped),
 
             default => null,
         };
@@ -906,31 +827,19 @@ class UpdateFeed
 
     /**
      * Fire event callbacks.
-     *
-     * On async drivers each handler is queued as a separate
-     * fiber/coroutine/process so that blocking code inside the handler
-     * does not freeze the event loop.
-     *
-     * For the Fork driver specifically, the child process reconnects
-     * the Client to get its own dedicated TCP socket.
      */
     private function dispatchEvent(string $event, TLObject $data): void
     {
         foreach ($this->listeners[$event] ?? [] as $handler) {
             $client = $this->client;
-            $isFork = $this->eventLoop !== null && $this->eventLoop->getName() === 'fork';
 
-            $run = function () use ($handler, $data, $event, $client, $isFork): void {
+            $run = function () use ($handler, $data, $event, $client): void {
                 try {
-                    // In fork mode, the child must get its own TCP socket
-                    if ($isFork) {
-                        $client->reconnect();
-                    }
                     $handler($data, $client);
                 } catch (\Throwable $e) {
                     if ($event !== 'error') {
                         $this->dispatchEvent('error', TLObject::fromArray([
-                            '_'     => 'error',
+                            '_' => 'error',
                             'event' => $event,
                             'error' => $e->getMessage(),
                         ]));
@@ -945,7 +854,7 @@ class UpdateFeed
     /**
      * Extract the inner `message` from an updateNewMessage-style update.
      *
-     * @return Message The extracted Message object with full property access.
+     * @return Message
      */
     private function extractMessage(TLObject $update): Message
     {
@@ -967,10 +876,6 @@ class UpdateFeed
         return $update;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Difference fetching
-    // ════════════════════════════════════════════════════════════════════
-
     /**
      * Fetch common updates difference from server.
      */
@@ -980,17 +885,26 @@ class UpdateFeed
             return;
         }
         $this->fetchingDifference = true;
+        $ptsBefore = $this->state->getPts();
 
         try {
             $this->doFetchDifference();
         } finally {
             $this->fetchingDifference = false;
 
-            // Re-process postponed
             $postponed = $this->postponed;
             $this->postponed = [];
-            foreach ($postponed as $upd) {
-                $this->feed($upd);
+
+            if ($postponed !== []) {
+                if ($ptsBefore !== 0 && $this->state->getPts() <= $ptsBefore) {
+                    $this->logger?->warning(
+                        'fetchDifference made no pts progress - dropping ' . count($postponed) . ' postponed update(s)'
+                    );
+                } else {
+                    foreach ($postponed as $upd) {
+                        $this->processUpdate($upd);
+                    }
+                }
             }
         }
     }
@@ -998,9 +912,9 @@ class UpdateFeed
     private function doFetchDifference(): void
     {
         $result = $this->client->invoke('updates.getDifference', [
-            'pts'  => $this->state->getPts(),
+            'pts' => $this->state->getPts(),
             'date' => $this->state->getDate(),
-            'qts'  => $this->state->getQts(),
+            'qts' => $this->state->getQts(),
         ]);
 
         $type = $result['_'] ?? '';
@@ -1019,7 +933,7 @@ class UpdateFeed
             case 'updates.differenceSlice':
                 $this->applyDifference($result);
                 $this->state->applyState($result['intermediate_state']);
-                // More data available — recurse
+                // More data available - recurse
                 $this->doFetchDifference();
                 break;
 
@@ -1032,25 +946,55 @@ class UpdateFeed
     }
 
     /**
-     * Fetch channel-specific difference.
+     * Resync a channel after a detected pts gap (or `updateChannelTooLong`).
      */
     public function fetchChannelDifference(int $channelId): void
     {
-        $pts = $this->state->getChannelPts($channelId);
-        if ($pts === 0) {
+        if (!empty($this->fetchingChannelDifference[$channelId])) {
             return;
         }
 
+        $pts = $this->state->getChannelPts($channelId);
+        if ($pts === 0) {
+            unset($this->channelPostponed[$channelId]);
+            return;
+        }
+
+        $this->fetchingChannelDifference[$channelId] = true;
+
+        try {
+            $this->doFetchChannelDifference($channelId, $pts);
+        } finally {
+            unset($this->fetchingChannelDifference[$channelId]);
+
+            $postponed = $this->channelPostponed[$channelId] ?? [];
+            unset($this->channelPostponed[$channelId]);
+
+            if ($postponed !== []) {
+                if ($this->state->getChannelPts($channelId) <= $pts) {
+                    $this->logger?->warning(
+                        "getChannelDifference for {$channelId} made no pts progress - dropping " . count($postponed) . ' postponed update(s)'
+                    );
+                } else {
+                    foreach ($postponed as $upd) {
+                        $this->processUpdate($upd);
+                    }
+                }
+            }
+        }
+    }
+
+    private function doFetchChannelDifference(int $channelId, int $pts): void
+    {
         try {
             $result = $this->client->invoke('updates.getChannelDifference', [
-                'force'   => false,
-                'channel' => $channelId, // Pass as int — preprocessor resolves via PeerDatabase
-                'filter'  => ['_' => 'channelMessagesFilterEmpty'],
-                'pts'     => $pts,
-                'limit'   => 100,
+                'force' => false,
+                'channel' => $channelId,
+                'filter' => ['_' => 'channelMessagesFilterEmpty'],
+                'pts' => $pts,
+                'limit' => 100,
             ]);
         } catch (\Throwable $e) {
-            // Channel might not be accessible
             $this->logger?->warning("Failed to get channel difference for {$channelId}: {$e->getMessage()}");
             return;
         }
@@ -1059,16 +1003,18 @@ class UpdateFeed
 
         switch ($type) {
             case 'updates.channelDifferenceEmpty':
-                // Nothing to do
+                if (isset($result['pts'])) {
+                    $this->state->setChannelPts($channelId, $result['pts']);
+                }
                 break;
 
             case 'updates.channelDifference':
                 $this->cacheEntities($result);
                 foreach ($result['new_messages'] ?? [] as $msg) {
                     $this->dispatch([
-                        '_'       => 'updateNewChannelMessage',
+                        '_' => 'updateNewChannelMessage',
                         'message' => $msg,
-                        'pts'     => $result['pts'] ?? $pts,
+                        'pts' => $result['pts'] ?? $pts,
                         'pts_count' => 0,
                     ]);
                 }
@@ -1076,10 +1022,18 @@ class UpdateFeed
                     $this->dispatch($upd);
                 }
                 $this->state->setChannelPts($channelId, $result['pts']);
+                $this->state->save();
+
+                if (empty($result['final'])) {
+                    $this->doFetchChannelDifference($channelId, $result['pts']);
+                    return;
+                }
                 break;
 
             case 'updates.channelDifferenceTooLong':
-                $this->state->setChannelPts($channelId, $result['pts'] ?? $pts);
+                $this->cacheEntities($result);
+                $newPts = $result['dialog']['pts'] ?? $result['pts'] ?? $pts;
+                $this->state->setChannelPts($channelId, $newPts);
                 break;
         }
 
@@ -1091,37 +1045,29 @@ class UpdateFeed
      */
     private function applyDifference(array $data): void
     {
-        // Cache entities
         $this->cacheEntities($data);
 
-        // New messages → dispatch as updateNewMessage
         foreach ($data['new_messages'] ?? [] as $msg) {
             $this->dispatch([
-                '_'         => 'updateNewMessage',
-                'message'   => $msg,
-                'pts'       => 0,
+                '_' => 'updateNewMessage',
+                'message' => $msg,
+                'pts' => 0,
                 'pts_count' => 0,
             ]);
         }
 
-        // New encrypted messages
         foreach ($data['new_encrypted_messages'] ?? [] as $msg) {
             $this->dispatch([
-                '_'       => 'updateNewEncryptedMessage',
+                '_' => 'updateNewEncryptedMessage',
                 'message' => $msg,
-                'qts'     => 0,
+                'qts' => 0,
             ]);
         }
 
-        // Other updates
         foreach ($data['other_updates'] ?? [] as $upd) {
             $this->dispatch($upd);
         }
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Helpers
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Convert updateShortMessage / updateShortChatMessage to a full message array.
@@ -1129,19 +1075,19 @@ class UpdateFeed
     private function shortMessageToFull(array $data, bool $isChat): array
     {
         $message = [
-            '_'            => 'message',
-            'id'           => $data['id'],
-            'message'      => $data['message'],
-            'date'         => $data['date'],
-            'out'          => $data['out'] ?? false,
-            'mentioned'    => $data['mentioned'] ?? false,
+            '_' => 'message',
+            'id' => $data['id'],
+            'message' => $data['message'],
+            'date' => $data['date'],
+            'out' => $data['out'] ?? false,
+            'mentioned' => $data['mentioned'] ?? false,
             'media_unread' => $data['media_unread'] ?? false,
-            'silent'       => $data['silent'] ?? false,
-            'fwd_from'     => $data['fwd_from'] ?? null,
-            'via_bot_id'   => $data['via_bot_id'] ?? null,
-            'reply_to'     => $data['reply_to'] ?? null,
-            'entities'     => $data['entities'] ?? [],
-            'ttl_period'   => $data['ttl_period'] ?? null,
+            'silent' => $data['silent'] ?? false,
+            'fwd_from' => $data['fwd_from'] ?? null,
+            'via_bot_id' => $data['via_bot_id'] ?? null,
+            'reply_to' => $data['reply_to'] ?? null,
+            'entities' => $data['entities'] ?? [],
+            'ttl_period' => $data['ttl_period'] ?? null,
         ];
 
         if ($isChat) {
@@ -1169,17 +1115,14 @@ class UpdateFeed
     {
         $type = $update['_'] ?? '';
 
-        // Updates that carry channel_id directly
         if (isset($update['channel_id'])) {
             return $update['channel_id'];
         }
 
-        // Updates with a message that has a peer_id.channel_id
         if (isset($update['message']['peer_id']['channel_id'])) {
             return $update['message']['peer_id']['channel_id'];
         }
 
-        // Known channel-specific update constructors
         return match ($type) {
             'updateNewChannelMessage',
             'updateEditChannelMessage',
@@ -1217,55 +1160,37 @@ class UpdateFeed
                 $peerDb->addFromTL($chat);
             }
         }
+
+        $peerDb->save();
     }
 
     /**
      * Get the current user's ID (best-effort).
-     *
-     * For outgoing updateShortMessage, we need the self user_id to build
-     * the from_id field. If unknown, we fall back to 0 — the message will
-     * still be delivered, just without the correct from_id.
      */
     private function getSelfId(): int
     {
-        return 0; // Will be enhanced when self-user caching is added
+        return 0;
     }
 
     /**
      * Check whether an update represents an outgoing message.
-     *
-     * When a handler calls $client->sendMessage(), the server delivers
-     * that message back as an update with out=true (or the constructor
-     * updateShortSentMessage). Without filtering these out, we get an
-     * infinite echo loop:  handler sends → update arrives → handler fires
-     * → handler sends → …
-     *
-     * This checks:
-     *   - updateNewMessage / updateNewChannelMessage with message.out=true
-     *   - updateShortMessage with out=true
-     *   - updateShortChatMessage with out=true
-     *   - updateShortSentMessage (always outgoing by definition)
      */
     private function isOutgoingMessage(array $update): bool
     {
         $type = $update['_'] ?? '';
 
-        // updateShortSentMessage is ALWAYS our own sent message
         if ($type === 'updateShortSentMessage') {
             return true;
         }
 
-        // updateShortMessage / updateShortChatMessage have a top-level 'out' flag
         if ($type === 'updateShortMessage' || $type === 'updateShortChatMessage') {
             return !empty($update['out']);
         }
 
-        // updateNewMessage / updateNewChannelMessage carry message.out
         if ($type === 'updateNewMessage' || $type === 'updateNewChannelMessage') {
             return !empty($update['message']['out']);
         }
 
-        // updateEditMessage / updateEditChannelMessage — also filter outgoing edits
         if ($type === 'updateEditMessage' || $type === 'updateEditChannelMessage') {
             return !empty($update['message']['out']);
         }
