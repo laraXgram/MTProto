@@ -9,13 +9,6 @@ use LaraGram\MTProto\Contracts\TransportInterface;
 use LaraGram\MTProto\Exceptions\TransportException;
 
 /**
- * Padded Intermediate transport protocol.
- * 
- * Like Intermediate but with random padding:
- * - 4 bytes 0xdddddddd as initial handshake
- * - 4 bytes length (little-endian)
- * - Random 0-15 padding bytes added to each message
- * 
  * @see https://core.telegram.org/mtproto/mtproto-transports#padded-intermediate
  */
 class IntermediatePaddedTransport implements TransportInterface
@@ -41,17 +34,16 @@ class IntermediatePaddedTransport implements TransportInterface
      */
     public function wrap(string $payload): string
     {
-        // Store original length for unwrap
-        $originalLength = strlen($payload);
-        
-        // Add random padding (0-15 bytes)
+        // Padded intermediate (per spec): length(4, LE) || payload || padding,
+        // where length covers BOTH payload and padding. There is NO second
+        // (nested) length field. the inner MTProto message carries its own
+        // length, and on read the 0-15 trailing pad bytes are stripped by
+        // 16-byte alignment (see unwrap()). An MTProxy with a `dd` secret rejects
+        // and drops the connection if the frame carries anything else.
         $paddingLength = random_int(0, 15);
         $padding = $paddingLength > 0 ? random_bytes($paddingLength) : '';
-        
-        $totalLength = $originalLength + $paddingLength;
-        
-        // Pack format: total_length(4) + original_length(4) + payload + padding
-        return pack('V', $totalLength + 4) . pack('V', $originalLength) . $payload . $padding;
+
+        return pack('V', strlen($payload) + $paddingLength) . $payload . $padding;
     }
 
     /**
@@ -59,16 +51,17 @@ class IntermediatePaddedTransport implements TransportInterface
      */
     public function unwrap(string $data): string
     {
-        // Skip total length (4 bytes)
-        if (strlen($data) >= 8) {
-            $totalLength = unpack('V', substr($data, 0, 4))[1];
-            $originalLength = unpack('V', substr($data, 4, 4))[1];
-            
-            // Check if this has our header format
-            if ($totalLength === strlen($data) - 4 && $originalLength <= $totalLength - 4) {
-                return substr($data, 8, $originalLength);
-            }
+        // $data is the frame body (the 4-byte length was already consumed by
+        // readLength). It is payload||padding with 0-15 trailing pad bytes. An
+        // MTProto encrypted frame is auth_key_id(8) + msg_key(16) + ciphertext,
+        // and the ciphertext is always a multiple of 16, so everything after the
+        // 24-byte header must be 16-aligned, the remainder is exactly the pad.
+        $len = strlen($data);
+        if ($len >= 24) {
+            $pad = ($len - 24) % 16;
+            return $pad > 0 ? substr($data, 0, $len - $pad) : $data;
         }
+
         return $data;
     }
 
@@ -78,7 +71,7 @@ class IntermediatePaddedTransport implements TransportInterface
     public function readLength(ConnectionInterface $connection): int
     {
         $lengthBytes = $connection->receive(4);
-        
+
         if ($lengthBytes === null) {
             throw TransportException::invalidFrame('Failed to read length');
         }
