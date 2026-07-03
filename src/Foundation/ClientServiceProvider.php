@@ -38,7 +38,55 @@ class ClientServiceProvider extends ServiceProvider
         $this->publishConfig();
         $this->registerFacadeAlias();
         $this->registerClientMiddlewareGroup();
+        $this->registerSurgeTables();
         $this->registerSurgePumpProcess();
+    }
+
+    protected function registerSurgeTables(): void
+    {
+        if (!$this->app->bound('surge') && !class_exists(\LaraGram\Surge\Facades\Surge::class)) {
+            return;
+        }
+
+        $config = $this->app['config'];
+        $mtproto = (array) ($config['mtproto'] ?? []);
+
+        $storeSets = [(array) ($mtproto['stores'] ?? [])];
+        foreach ((array) ($mtproto['sessions'] ?? []) as $session) {
+            if (is_array($session) && isset($session['stores'])) {
+                $storeSets[] = (array) $session['stores'];
+            }
+        }
+
+        $tables = (array) ($config['surge.tables'] ?? []);
+        $added = false;
+
+        foreach ($storeSets as $stores) {
+            foreach ($stores as $store) {
+                if (!is_array($store)) {
+                    continue;
+                }
+
+                $driver = strtolower((string) ($store['driver'] ?? ''));
+                if ($driver !== 'swoole-table' && $driver !== 'swoole_table') {
+                    continue;
+                }
+
+                $name = (string) ($store['table'] ?? 'mtproto');
+                $rows = (int) ($store['rows'] ?? 1024);
+                $size = (int) ($store['size'] ?? 8192);
+                $key = "{$name}:{$rows}";
+
+                if (!isset($tables[$key])) {
+                    $tables[$key] = ['v' => "string:{$size}"];
+                    $added = true;
+                }
+            }
+        }
+
+        if ($added) {
+            $config['surge.tables'] = $tables;
+        }
     }
 
     protected function registerSurgePumpProcess(): void
@@ -118,8 +166,18 @@ class ClientServiceProvider extends ServiceProvider
     {
         $this->app->singleton(Runtime::class, function ($app) {
             $driver = $app['config']['mtproto.driver'] ?? 'sync';
+            $hooks = $driver === 'swoole';
 
-            return new SwooleRuntime(enableHooks: $driver === 'swoole');
+            return new \LaraGram\MTProto\Runtime\SurgeRuntime(
+                surgeTableResolver: static function (string $name) {
+                    if (!class_exists(\LaraGram\Surge\Facades\Surge::class)) {
+                        return null;
+                    }
+
+                    return \LaraGram\Surge\Facades\Surge::table($name);
+                },
+                enableHooks: $hooks,
+            );
         });
     }
 

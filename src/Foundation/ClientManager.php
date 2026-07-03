@@ -75,7 +75,7 @@ class ClientManager
             'max_retries' => (int)($config['connection']['retry_count'] ?? 5),
             'use_pump' => (bool)($config['use_pump'] ?? false),
             'device' => \LaraGram\MTProto\Core\DeviceProfile::resolve((array)($config['device'] ?? [])),
-            'rate_limiter' => $this->resolveRateLimiter($config),
+            'rate_limiter' => $this->resolveRateLimiter($config, $session),
             'rate_limits' => (array)($config['rate_limit'] ?? []),
             'pacing' => (array)($config['pacing'] ?? []),
             'pool' => (array)($config['pool'] ?? []),
@@ -347,7 +347,7 @@ class ClientManager
     /**
      * Resolve the rate limiter.
      */
-    protected function resolveRateLimiter(array $config): \LaraGram\MTProto\Contracts\RateLimiterInterface
+    protected function resolveRateLimiter(array $config, string $session = 'default'): \LaraGram\MTProto\Contracts\RateLimiterInterface
     {
         $rate = (float)($config['rate_limit']['global']['rate'] ?? 30);
         $capacity = (float)($config['rate_limit']['global']['capacity'] ?? 30);
@@ -355,7 +355,7 @@ class ClientManager
         $store = $this->resolveStore($config, 'limit', '.limits');
 
         if ($store !== null) {
-            return new \LaraGram\MTProto\Core\StoreRateLimiter($store, $rate, $capacity);
+            return new \LaraGram\MTProto\Core\StoreRateLimiter($store, $rate, $capacity, "rl:{$session}:");
         }
 
         return new \LaraGram\MTProto\Core\TokenBucketRateLimiter($rate, $capacity);
