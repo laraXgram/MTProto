@@ -300,7 +300,7 @@ class ClientManager
         $primary = $manager->make($this->withFileDefaults($store, $config, $fileExt));
 
         $seen = [strtolower((string)$store['driver'])];
-        $fallbacks = [];
+        $legacy = [];
 
         foreach ((array)($store['migrate_from'] ?? []) as $from) {
             $fromCfg = is_array($from) ? $from : ['driver' => $from];
@@ -311,16 +311,20 @@ class ClientManager
             }
 
             $seen[] = $driver;
-            $fallbacks[] = $manager->make($this->withFileDefaults($fromCfg, $config, $fileExt));
+            $legacy[] = $manager->make($this->withFileDefaults($fromCfg, $config, $fileExt));
         }
+
+        $resolved = $legacy === []
+            ? $primary
+            : new \LaraGram\MTProto\Store\MigratingStore($primary, ...$legacy);
 
         if (!in_array('file', $seen, true)) {
-            $fallbacks[] = $manager->make($this->withFileDefaults(['driver' => 'file'], $config, $fileExt));
+            $mirror = $manager->make($this->withFileDefaults(['driver' => 'file'], $config, $fileExt));
+
+            return new \LaraGram\MTProto\Store\MirrorStore($resolved, $mirror);
         }
 
-        return $fallbacks === []
-            ? $primary
-            : new \LaraGram\MTProto\Store\MigratingStore($primary, ...$fallbacks);
+        return $resolved;
     }
 
     /**
