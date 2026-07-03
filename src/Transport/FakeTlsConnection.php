@@ -261,19 +261,19 @@ final class FakeTlsConnection implements ConnectionInterface
         };
 
         $str("\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03");
-        $zero(32);                       // client random - overwritten with digest
+        $zero(32); // client random - overwritten with digest
         $str("\x20");
-        $rand(32);                       // session_id
+        $rand(32); // session_id
         $str("\x00\x20");
         $gr(0);
         $str("\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9\xcc\xa8\xc0\x13\xc0\x14\x00\x9c"
             . "\x00\x9d\x00\x2f\x00\x35\x01\x00\x01\x93");
         $gr(2);
         $str("\x00\x00\x00\x00");
-        $begin();                        // SNI extension data
-        $begin();                    // server_name_list
-        $str("\x00");            // name_type: host_name
-        $begin();                // host_name
+        $begin(); // SNI extension data
+        $begin(); // server_name_list
+        $str("\x00"); // name_type: host_name
+        $begin(); // host_name
         $str($domain);
         $end();
         $end();
@@ -285,7 +285,7 @@ final class FakeTlsConnection implements ConnectionInterface
             . "\x04\x04\x01\x05\x03\x08\x05\x05\x01\x08\x06\x06\x01\x00\x12\x00\x00\x00\x33\x00\x2b\x00\x29");
         $gr(4);
         $str("\x00\x01\x00\x00\x1d\x00\x20");
-        $buf .= $this->generateKey();    // x25519 key_share (32 bytes)
+        $buf .= $this->generateKey(); // x25519 key_share (32 bytes)
         $str("\x00\x2d\x00\x02\x01\x01\x00\x2b\x00\x0b\x0a");
         $gr(6);
         $str("\x03\x04\x03\x03\x03\x02\x03\x01\x00\x1b\x00\x03\x02\x00\x02");

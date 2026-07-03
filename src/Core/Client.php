@@ -78,6 +78,7 @@ class Client
     private int $floodSleepLimit = 60;
     private int $maxRetries = 5;
     private bool $usePump = false;
+    private bool $autoMigrate = true;
     private ?LoggerInterface $logger;
     private Filesystem $files;
     private ?Runtime $runtime;
@@ -136,6 +137,7 @@ class Client
         $this->floodSleepLimit = (int)($options['flood_sleep_limit'] ?? 60);
         $this->maxRetries = (int)($options['max_retries'] ?? 5);
         $this->usePump = (bool)($options['use_pump'] ?? false);
+        $this->autoMigrate = (bool)($options['auto_migrate'] ?? true);
         $this->logger = $options['logger'] ?? $this->resolveDefaultLogger();
         $this->files = $options['files'] ?? new Filesystem();
         $this->runtime = $options['runtime'] ?? null;
@@ -217,7 +219,7 @@ class Client
         $this->session = $this->makeSession($sessionName);
 
         $storedDc = $this->session->getDcId();
-        if ($storedDc >= 1 && $storedDc <= 5) {
+        if ($this->session->getAuthKey() !== null && $storedDc >= 1 && $storedDc <= 5) {
             $this->dcId = $storedDc;
         }
 
@@ -391,6 +393,8 @@ class Client
         $opts['session_dir'] = $this->sessionDir;
 
         $opts['session_store'] = new \LaraGram\MTProto\Store\ArrayStore();
+
+        $opts['auto_migrate'] = false;
 
         return new self($this->apiId, $this->apiHash, $opts);
     }
@@ -741,6 +745,9 @@ class Client
                 $message = $e->getMessage();
 
                 if (preg_match('/(PHONE|USER|FILE|NETWORK)_MIGRATE_(\d+)/', $message, $m)) {
+                    if (!$this->autoMigrate) {
+                        throw $e;
+                    }
                     if (++$migrations > 5) {
                         throw $e;
                     }
