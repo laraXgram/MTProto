@@ -450,8 +450,8 @@ class Client
     /**
      * Low-level invoke - no parameter preprocessing, no peer caching.
      *
-     * @internal
      * @param callable|null $progress
+     * @internal
      */
     public function uploadFile(string $path, ?string $fileName = null, ?callable $progress = null): array
     {
@@ -561,6 +561,85 @@ class Client
         );
 
         return $this->sendUploadedMedia($peer, $media, $message, $params);
+    }
+
+    public function sendLocation(string|int|array $peer, float $lat, float $long, array $params = []): mixed
+    {
+        if (isset($params['period'])) {
+            $media = InputMedia::geoLive(
+                $lat,
+                $long,
+                (int)$params['period'],
+                isset($params['heading']) ? (int)$params['heading'] : null,
+                isset($params['proximity_notification_radius']) ? (int)$params['proximity_notification_radius'] : null,
+                (bool)($params['stopped'] ?? false),
+            );
+            unset($params['period'], $params['heading'], $params['proximity_notification_radius'], $params['stopped']);
+        } else {
+            $media = InputMedia::geoPoint(
+                $lat,
+                $long,
+                isset($params['accuracy_radius']) ? (int)$params['accuracy_radius'] : null,
+            );
+            unset($params['accuracy_radius']);
+        }
+
+        return $this->sendUploadedMedia($peer, $media, null, $params);
+    }
+
+    public function sendVenue(string|int|array $peer, float $lat, float $long, string $title, string $address, array $params = []): mixed
+    {
+        $media = InputMedia::venue(
+            $lat,
+            $long,
+            $title,
+            $address,
+            (string)($params['provider'] ?? ''),
+            (string)($params['venue_id'] ?? ''),
+            (string)($params['venue_type'] ?? ''),
+        );
+        unset($params['provider'], $params['venue_id'], $params['venue_type']);
+
+        return $this->sendUploadedMedia($peer, $media, null, $params);
+    }
+
+    public function sendContact(string|int|array $peer, string $phoneNumber, string $firstName, array $params = []): mixed
+    {
+        $media = InputMedia::contact(
+            $phoneNumber,
+            $firstName,
+            (string)($params['last_name'] ?? ''),
+            (string)($params['vcard'] ?? ''),
+        );
+        unset($params['last_name'], $params['vcard']);
+
+        return $this->sendUploadedMedia($peer, $media, null, $params);
+    }
+
+    public function sendDice(string|int|array $peer, string $emoticon = '🎲', array $params = []): mixed
+    {
+        return $this->sendUploadedMedia($peer, InputMedia::dice($emoticon), null, $params);
+    }
+
+    /**
+     * @param list<string> $answers
+     */
+    public function sendPoll(string|int|array $peer, string $question, array $answers, array $params = []): mixed
+    {
+        $media = InputMedia::poll(
+            $question,
+            $answers,
+            (bool)($params['multiple_choice'] ?? false),
+            (bool)($params['public_voters'] ?? false),
+            isset($params['correct_answers']) ? (array)$params['correct_answers'] : null,
+            isset($params['solution']) ? (string)$params['solution'] : null,
+            isset($params['close_period']) ? (int)$params['close_period'] : null,
+        );
+        foreach (['multiple_choice', 'public_voters', 'correct_answers', 'solution', 'close_period'] as $k) {
+            unset($params[$k]);
+        }
+
+        return $this->sendUploadedMedia($peer, $media, null, $params);
     }
 
     /**

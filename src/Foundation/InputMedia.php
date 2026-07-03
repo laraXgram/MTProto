@@ -171,4 +171,120 @@ final class InputMedia
     {
         return ['_' => 'documentAttributeAnimated'];
     }
+
+    public static function geoPoint(float $lat, float $long, ?int $accuracyRadius = null): array
+    {
+        return ['_' => 'inputMediaGeoPoint', 'geo_point' => self::inputGeoPoint($lat, $long, $accuracyRadius)];
+    }
+
+    public static function geoLive(float $lat, float $long, ?int $period = null, ?int $heading = null, ?int $proximityNotificationRadius = null, bool $stopped = false): array
+    {
+        $media = ['_' => 'inputMediaGeoLive', 'geo_point' => self::inputGeoPoint($lat, $long)];
+
+        if ($stopped) {
+            $media['stopped'] = true;
+        }
+        if ($heading !== null) {
+            $media['heading'] = $heading;
+        }
+        if ($period !== null) {
+            $media['period'] = $period;
+        }
+        if ($proximityNotificationRadius !== null) {
+            $media['proximity_notification_radius'] = $proximityNotificationRadius;
+        }
+
+        return $media;
+    }
+
+    public static function venue(float $lat, float $long, string $title, string $address, string $provider = '', string $venueId = '', string $venueType = ''): array
+    {
+        return [
+            '_' => 'inputMediaVenue',
+            'geo_point' => self::inputGeoPoint($lat, $long),
+            'title' => $title,
+            'address' => $address,
+            'provider' => $provider,
+            'venue_id' => $venueId,
+            'venue_type' => $venueType,
+        ];
+    }
+
+    public static function contact(string $phoneNumber, string $firstName, string $lastName = '', string $vcard = ''): array
+    {
+        return [
+            '_' => 'inputMediaContact',
+            'phone_number' => $phoneNumber,
+            'first_name' => $firstName,
+            'last_name' => $lastName,
+            'vcard' => $vcard,
+        ];
+    }
+
+    public static function dice(string $emoticon = '🎲'): array
+    {
+        return ['_' => 'inputMediaDice', 'emoticon' => $emoticon];
+    }
+
+    public static function poll(string $question, array $answers, bool $multipleChoice = false, bool $publicVoters = false, ?array $correctAnswers = null, ?string $solution = null, ?int $closePeriod = null): array
+    {
+        $quiz = $correctAnswers !== null;
+
+        $pollAnswers = [];
+        foreach (array_values($answers) as $text) {
+            $pollAnswers[] = [
+                '_' => 'inputPollAnswer',
+                'text' => self::textWithEntities((string)$text),
+            ];
+        }
+
+        $poll = [
+            '_' => 'poll',
+            'id' => 0,
+            'question' => self::textWithEntities($question),
+            'answers' => $pollAnswers,
+            'creator' => true,
+        ];
+
+        if ($quiz) {
+            $poll['quiz'] = true;
+        }
+        if ($multipleChoice) {
+            $poll['multiple_choice'] = true;
+        }
+        if ($publicVoters) {
+            $poll['public_voters'] = true;
+        }
+        if ($closePeriod !== null) {
+            $poll['close_period'] = $closePeriod;
+        }
+
+        $media = ['_' => 'inputMediaPoll', 'poll' => $poll];
+
+        if ($quiz) {
+            $media['correct_answers'] = array_map('intval', array_values($correctAnswers));
+        }
+        if ($solution !== null) {
+            $media['solution'] = $solution;
+            $media['solution_entities'] = [];
+        }
+
+        return $media;
+    }
+
+    private static function inputGeoPoint(float $lat, float $long, ?int $accuracyRadius = null): array
+    {
+        $geo = ['_' => 'inputGeoPoint', 'lat' => $lat, 'long' => $long];
+
+        if ($accuracyRadius !== null) {
+            $geo['accuracy_radius'] = $accuracyRadius;
+        }
+
+        return $geo;
+    }
+
+    private static function textWithEntities(string $text): array
+    {
+        return ['_' => 'textWithEntities', 'text' => $text, 'entities' => []];
+    }
 }
