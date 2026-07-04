@@ -1169,7 +1169,7 @@ class Client
 
         $this->tlParser = new TLParser($this->files);
         $schemasDir = __DIR__ . '/../TL/schemas';
-        foreach (['mtproto.tl', 'auth_key.tl', 'sys_msgs.tl', 'main_api.tl'] as $file) {
+        foreach (['mtproto_api.tl', 'telegram_api.tl', 'mtproto_ext.tl'] as $file) {
             $path = $schemasDir . '/' . $file;
             if (file_exists($path)) {
                 $this->tlParser->parseFile($path);

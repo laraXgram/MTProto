@@ -1,13 +1,39 @@
-boolFalse#bc799737 = Bool;
-boolTrue#997275b5 = Bool;
+int ? = Int;
+long ? = Long;
+double ? = Double;
+string ? = String;
+
+bytes = Bytes;
+int256 = Int256;
 
 true#3fedd339 = True;
+
+boolFalse#bc799737 = Bool;
+boolTrue#997275b5 = Bool;
 
 vector#1cb5c415 {t:Type} # [ t ] = Vector t;
 
 error#c4b9f9bb code:int text:string = Error;
 
-null#56730bcc = Null;
+ipPort#d433ad73 ipv4:int port:int = IpPort;
+ipPortSecret#37982646 ipv4:int port:int secret:bytes = IpPort;
+accessPointRule#4679b65f phone_prefix_rules:string dc_id:int ips:vector<IpPort> = AccessPointRule;
+help.configSimple#5a592a6c date:int expires:int rules:vector<AccessPointRule> = help.ConfigSimple;
+
+inputPeerPhotoFileLocationLegacy#27d69997 flags:# big:flags.0?true peer:InputPeer volume_id:long local_id:int = InputFileLocation;
+inputStickerSetThumbLegacy#dbaeae9 stickerset:InputStickerSet volume_id:long local_id:int = InputFileLocation;
+
+---functions---
+
+test.useConfigSimple = help.ConfigSimple;
+test.parseInputAppEvent = InputAppEvent;
+
+invokeWithBusinessConnectionPrefix#dd289f8e connection_id:string = Error;
+invokeWithGooglePlayIntegrityPrefix#1df92984 nonce:string token:string = Error;
+invokeWithApnsSecretPrefix#0dae54f8 nonce:string secret:string = Error;
+invokeWithReCaptchaPrefix#adbb0f94 token:string = Error;
+
+---types---
 
 inputPeerEmpty#7f3b18ea = InputPeer;
 inputPeerSelf#7da07ec9 = InputPeer;
@@ -1412,7 +1438,7 @@ messages.messageViews#b6c4f543 views:Vector<MessageViews> chats:Vector<Chat> use
 
 messages.discussionMessage#a6341782 flags:# messages:Vector<Message> max_id:flags.0?int read_inbox_max_id:flags.1?int read_outbox_max_id:flags.2?int unread_count:int chats:Vector<Chat> users:Vector<User> = messages.DiscussionMessage;
 
-messageReplyHeader#1b97dd66 flags:# reply_to_scheduled:flags.2?true forum_topic:flags.3?true quote:flags.9?true reply_to_ephemeral:flags.13?true reply_to_msg_id:flags.4?int reply_to_peer_id:flags.0?Peer reply_from:flags.5?MessageFwdHeader reply_media:flags.8?MessageMedia reply_to_top_id:flags.1?int quote_text:flags.6?string quote_entities:flags.7?Vector<MessageEntity> quote_offset:flags.10?int todo_item_id:flags.11?int poll_option:flags.12?bytes = MessageReplyHeader;
+messageReplyHeader#1b97dd66 flags:# reply_to_scheduled:flags.2?true forum_topic:flags.3?true quote:flags.9?true reply_to_msg_id:flags.4?int reply_to_peer_id:flags.0?Peer reply_from:flags.5?MessageFwdHeader reply_media:flags.8?MessageMedia reply_to_top_id:flags.1?int quote_text:flags.6?string quote_entities:flags.7?Vector<MessageEntity> quote_offset:flags.10?int todo_item_id:flags.11?int poll_option:flags.12?bytes = MessageReplyHeader;
 messageReplyStoryHeader#e5af939 peer:Peer story_id:int = MessageReplyHeader;
 
 messageReplies#83d60fc2 flags:# comments:flags.0?true replies:int replies_pts:int recent_repliers:flags.1?Vector<Peer> channel_id:flags.0?long max_id:flags.2?int read_max_id:flags.3?int = MessageReplies;
@@ -3035,5 +3061,3 @@ aicompose.deleteTone#dd39316a tone:InputAiComposeTone = Bool;
 aicompose.getTone#b2e8ba03 tone:InputAiComposeTone = aicompose.Tones;
 aicompose.getTones#abd59201 hash:long = aicompose.Tones;
 aicompose.getToneExample#d1b4ab14 tone:InputAiComposeTone num:int = AiComposeToneExample;
-
-// LAYER 227

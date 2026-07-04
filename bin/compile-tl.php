@@ -4,25 +4,18 @@
  * TL Schema Compiler
  *
  * Reads the TL schema files and generates typed PHP classes:
- *  - src/Generated/Methods/<Namespace>.php   — one class per API namespace
- *  - src/Generated/Types/<Type>.php          — one class per TL constructor
- *  - src/Generated/ClientMethods.php         — trait with flat method shortcuts
+ *  - src/Generated/Methods/<Namespace>.php   : one class per API namespace
+ *  - src/Generated/Types/<Type>.php          : one class per TL constructor
+ *  - src/Generated/ClientMethods.php         : trait with flat method shortcuts
  *
  * Usage:
  *   php bin/compile-tl.php
- *
- * Performance: single-pass generation, no template engine, pure string concat.
  */
 
 declare(strict_types=1);
 
-// Load the first available Composer autoloader. When the package is installed as
-// a dependency the framework (LaraGram\Filesystem, needed by TLParser) lives in
-// the app's vendor/, not the package's own — so try both.
-// Require every available autoloader (the package's own vendor/ may lack the
-// framework while the app's provides it) until LaraGram\Filesystem resolves.
 foreach ([
-    getcwd() . '/vendor/autoload.php', // dev: run from app root (handles symlinked package)
+    getcwd() . '/vendor/autoload.php',
     __DIR__ . '/../../../autoload.php',
     __DIR__ . '/../../../../vendor/autoload.php',
     __DIR__ . '/../vendor/autoload.php',
@@ -42,22 +35,18 @@ if (!class_exists(\LaraGram\Filesystem\Filesystem::class)) {
 
 use LaraGram\MTProto\TL\TLParser;
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Configuration
-// ════════════════════════════════════════════════════════════════════════════
 
 $ROOT      = dirname(__DIR__);
 $SCHEMA_DIR = $ROOT . '/src/TL/schemas';
 $OUTPUT_DIR = $ROOT . '/src/Generated';
-$SCHEMAS    = ['main_api.tl'];
+$SCHEMAS    = ['telegram_api.tl'];
 
 $NAMESPACE_BASE = 'LaraGram\\MTProto\\Generated';
 
-// ════════════════════════════════════════════════════════════════════════════
-//  Smart defaults — params that are technically "required" in TL schema
+//  Smart defaults - params that are technically "required" in TL schema
 //  but have obvious sensible defaults. These become optional in PHP.
 //  Format: paramName => [ tlType => phpDefaultLiteral ]
-// ════════════════════════════════════════════════════════════════════════════
 
 $PARAM_DEFAULTS = [
     'hash'         => ['int' => '0', 'long' => '0'],
@@ -76,7 +65,7 @@ $PARAM_DEFAULTS = [
     'filter'       => ['MessagesFilter' => "['_' => 'inputMessagesFilterEmpty']"],
 ];
 
-// Methods where 'hash' is NOT a cache hash — never auto-default
+// Methods where 'hash' is NOT a cache hash - never auto-default
 $HASH_EXCLUSIONS = [
     'account.resetAuthorization',
     'account.resetWebAuthorization',
@@ -86,9 +75,7 @@ $HASH_EXCLUSIONS = [
     'account.sendConfirmPhoneCode',
 ];
 
-// ════════════════════════════════════════════════════════════════════════════
-//  TL Type → PHP Type mapping
-// ════════════════════════════════════════════════════════════════════════════
+//  TL Type -> PHP Type mapping
 
 function tlTypeToPhp(string $type, bool $isVector = false, bool $isOptional = false): string
 {
@@ -913,10 +900,6 @@ $buf .= "class ClientIdeHelper {}\n";
 
 file_put_contents($OUTPUT_DIR . '/_ide_helper.php', $buf);
 echo "  ✓ _ide_helper.php\n";
-
-// ════════════════════════════════════════════════════════════════════════════
-//  Summary
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "\n✅ TL Compilation complete!\n";
 echo "   Output: {$OUTPUT_DIR}/\n";
