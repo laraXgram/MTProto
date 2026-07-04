@@ -9,12 +9,12 @@ use LaraGram\MTProto\Exceptions\MTProtoException;
 
 /**
  * Authorization handler for Telegram login.
- * 
+ *
  * Handles phone login, bot login, 2FA, and session management.
- * 
+ *
  * Supports full interactive login flow:
  *   sendCode() → signIn() → checkPassword() → signUp()
- * 
+ *
  * Or use the interactive() method for a guided CLI login.
  */
 class Authorization
@@ -84,16 +84,16 @@ class Authorization
             // Handle PHONE_MIGRATE_X error - need to switch to different DC
             if (preg_match('/PHONE_MIGRATE_(\d+)/', $e->getMessage(), $matches)) {
                 $newDcId = (int) $matches[1];
-                
+
                 // Switch to the correct DC
                 if (!$this->client->switchDc($newDcId)) {
                     throw new MTProtoException("Failed to switch to DC{$newDcId}");
                 }
-                
+
                 // Retry sendCode on the new DC
                 return $this->sendCode($phoneNumber);
             }
-            
+
             throw $e;
         }
 
@@ -202,7 +202,7 @@ class Authorization
 
     /**
      * Get password info (hint, has_recovery, etc.)
-     * 
+     *
      * @return array account.password
      */
     public function getPasswordInfo(): array
@@ -212,7 +212,7 @@ class Authorization
 
     /**
      * Request password recovery via email.
-     * 
+     *
      * @return array auth.passwordRecovery (contains email_pattern)
      */
     public function requestPasswordRecovery(): array
@@ -222,7 +222,7 @@ class Authorization
 
     /**
      * Recover password using email recovery code.
-     * 
+     *
      * @param string $code Recovery code from email
      * @return array auth.authorization
      */
@@ -268,6 +268,8 @@ class Authorization
      */
     public function botLogin(string $token): array
     {
+        $token = trim($token);
+
         $result = $this->client->invoke('auth.importBotAuthorization', [
             'flags' => 0,
             'api_id' => $this->client->getApiId(),
@@ -358,13 +360,13 @@ class Authorization
 
         // x = H(salt1 || password || salt1)
         $hash1 = hash('sha256', $salt1 . $password . $salt1, true);
-        
+
         // x = H(salt2 || x || salt2)
         $hash2 = hash('sha256', $salt2 . $hash1 . $salt2, true);
-        
+
         // x = PBKDF2(hash2, salt1, 100000, 64, SHA512)
         $pbkdf2 = hash_pbkdf2('sha512', $hash2, $salt1, 100000, 64, true);
-        
+
         // x = H(salt2 || pbkdf2 || salt2)
         $x = hash('sha256', $salt2 . $pbkdf2 . $salt2, true);
         $xNum = gmp_import($x, 1, GMP_MSW_FIRST | GMP_BIG_ENDIAN);
@@ -372,7 +374,7 @@ class Authorization
         // Generate random a (256 bits)
         $a = gmp_import(random_bytes(256), 1, GMP_MSW_FIRST | GMP_BIG_ENDIAN);
         $a = gmp_mod($a, gmp_sub($p, gmp_init(1)));
-        
+
         if (gmp_cmp($a, 0) === 0) {
             $a = gmp_init(1);
         }
@@ -394,11 +396,11 @@ class Authorization
         $gx = gmp_powm($g, $xNum, $p);
         $kgx = gmp_mod(gmp_mul($k, $gx), $p);
         $diff = gmp_mod(gmp_sub($srpB, $kgx), $p);
-        
+
         if (gmp_cmp($diff, 0) < 0) {
             $diff = gmp_add($diff, $p);
         }
-        
+
         $exp = gmp_mod(gmp_add($a, gmp_mul($u, $xNum)), gmp_sub($p, gmp_init(1)));
         $S = gmp_powm($diff, $exp, $p);
 
@@ -410,7 +412,7 @@ class Authorization
         $hp = hash('sha256', $pBytes, true);
         $hg = hash('sha256', $gBytes, true);
         $hpXorHg = $hp ^ $hg;
-        
+
         $hsalt1 = hash('sha256', $salt1, true);
         $hsalt2 = hash('sha256', $salt2, true);
 
