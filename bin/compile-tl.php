@@ -261,9 +261,30 @@ function tlReturnTypeToClass(string $type, string $nsBase): ?string
     return "{$nsBase}\\Types\\{$className}";
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+/**
+ * Whether a method carries both `entities` and a `message`/`caption` text field -
+ * the shape ParamPreprocessor::applyParseMode() rewrites when the caller passes
+ * `parse_mode` instead of building `entities` by hand. Mirrors that method's own
+ * field detection so the generated signature and the runtime behavior never drift.
+ */
+function methodSupportsParseMode(\LaraGram\MTProto\TL\TLMethod $m): bool
+{
+    $hasEntities = false;
+    $hasText     = false;
+
+    foreach ($m->getParams() as $p) {
+        if ($p->getName() === 'entities') {
+            $hasEntities = true;
+        }
+        if ($p->getName() === 'message' || $p->getName() === 'caption') {
+            $hasText = true;
+        }
+    }
+
+    return $hasEntities && $hasText;
+}
+
 //  Parse schemas
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "🔧 TL Compiler starting...\n";
 
@@ -284,9 +305,7 @@ $types        = $parser->getTypes();
 
 echo "  📊 Methods: " . count($methods) . ", Constructors: " . count($constructors) . ", Types: " . count($types) . "\n";
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Group methods by namespace
-// ════════════════════════════════════════════════════════════════════════════
 
 $methodsByNs = [];
 foreach ($methods as $m) {
@@ -303,9 +322,7 @@ foreach ($methods as $m) {
 
 ksort($methodsByNs);
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Clean & create output directories
-// ════════════════════════════════════════════════════════════════════════════
 
 function ensureDir(string $dir): void
 {
@@ -332,9 +349,7 @@ if (is_dir($OUTPUT_DIR)) {
 ensureDir($OUTPUT_DIR . '/Methods');
 ensureDir($OUTPUT_DIR . '/Types');
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Generate Method Namespace Classes
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "\n📝 Generating Method classes...\n";
 
@@ -472,6 +487,15 @@ foreach ($methodsByNs as $ns => $nsMethods) {
             }
         }
 
+        // Bot-API convenience: methods with `entities` + `message`/`caption` also
+        // accept `parse_mode` ('html'|'markdown') - ParamPreprocessor builds
+        // `entities` from the text for you. See methodSupportsParseMode().
+        $supportsParseMode = methodSupportsParseMode($m);
+        if ($supportsParseMode) {
+            $optionalParams[] = '?string $parse_mode = null';
+            $docParams[] = "     * @param string|null \$parse_mode  Bot-API style ('html'|'markdown') - auto-fills \$entities from the text when \$entities is omitted";
+        }
+
         // Required first, then optional
         $phpParams = array_merge($requiredParams, $optionalParams);
 
@@ -550,6 +574,9 @@ foreach ($methodsByNs as $ns => $nsMethods) {
                     $buf .= "        \$__args['{$pn}'] = \${$pn};\n";
                 }
             }
+            if ($supportsParseMode) {
+                $buf .= "        if (\$parse_mode !== null) \$__args['parse_mode'] = \$parse_mode;\n";
+            }
             $buf .= "        \$__result = \$this->client->invoke('{$fullTL}', \$__args);\n";
         }
 
@@ -583,9 +610,7 @@ foreach ($methodsByNs as $ns => $nsMethods) {
     echo "  ✓ Methods/{$className}.php (" . count($nsMethods) . " methods)\n";
 }
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Generate Type classes (constructors)
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "\n📝 Generating Type classes...\n";
 
@@ -655,9 +680,7 @@ foreach ($typeGroups as $resultType => $ctors) {
 
 echo "  ✓ Generated {$typeCount} type classes\n";
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Generate constructor → Type class map (for TLObject::fromArray())
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "\n📝 Generating constructor map...\n";
 
@@ -689,9 +712,7 @@ $buf .= "}\n";
 file_put_contents($OUTPUT_DIR . '/Types/ConstructorMap.php', $buf);
 echo "  ✓ ConstructorMap.php (" . array_sum(array_map('count', $typeGroups)) . " constructors)\n";
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Generate ClientMethods trait  — flat $client->sendMessage() shortcuts
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "\n📝 Generating ClientMethods trait...\n";
 
@@ -789,9 +810,7 @@ $buf .= "}\n";
 file_put_contents($OUTPUT_DIR . '/ClientMethods.php', $buf);
 echo "  ✓ ClientMethods.php (" . count($methodToNs) . " flat method shortcuts)\n";
 
-// ════════════════════════════════════════════════════════════════════════════
 //  Generate IDE helper file with @method annotations
-// ════════════════════════════════════════════════════════════════════════════
 
 echo "\n📝 Generating IDE helper...\n";
 
@@ -887,6 +906,10 @@ foreach ($allMethodsFlat as $fullTL => $info) {
         } else {
             $requiredParts[] = "{$docType} \${$pn}";
         }
+    }
+
+    if (methodSupportsParseMode($m)) {
+        $optionalParts[] = 'string|null $parse_mode = null';
     }
 
     $allParts = array_merge($requiredParts, $optionalParts);
