@@ -598,10 +598,6 @@ class UpdateFeed
         $type = $update['_'] ?? 'unknown';
         $wrapped = TLObject::fromArray($update);
 
-        if ($this->isOutgoingMessage($update)) {
-            return;
-        }
-
         if ($this->onUpdate !== null) {
             $handler = $this->onUpdate;
 
@@ -1182,29 +1178,4 @@ class UpdateFeed
         return 0;
     }
 
-    /**
-     * Check whether an update represents an outgoing message.
-     */
-    private function isOutgoingMessage(array $update): bool
-    {
-        $type = $update['_'] ?? '';
-
-        if ($type === 'updateShortSentMessage') {
-            return true;
-        }
-
-        if ($type === 'updateShortMessage' || $type === 'updateShortChatMessage') {
-            return !empty($update['out']);
-        }
-
-        if ($type === 'updateNewMessage' || $type === 'updateNewChannelMessage') {
-            return !empty($update['message']['out']);
-        }
-
-        if ($type === 'updateEditMessage' || $type === 'updateEditChannelMessage') {
-            return !empty($update['message']['out']);
-        }
-
-        return false;
-    }
 }

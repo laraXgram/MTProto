@@ -19,6 +19,30 @@ class ClientListenRegistrar extends ListenRegistrar
         return $this->attribute('for_connections', (array) $sessions);
     }
 
+    /**
+     * Scope the following listens to incoming messages only (received, not sent by this session).
+     *
+     * @return $this
+     */
+    public function incomming()
+    {
+        return $this->attribute('middleware', array_merge(
+            (array) ($this->attributes['middleware'] ?? []), ['direction:in']
+        ));
+    }
+
+    /**
+     * Scope the following listens to outgoing messages only (sent by this session).
+     *
+     * @return $this
+     */
+    public function outgoing()
+    {
+        return $this->attribute('middleware', array_merge(
+            (array) ($this->attributes['middleware'] ?? []), ['direction:out']
+        ));
+    }
+
 
     /**
      * The methods to dynamically pass through to the listener.

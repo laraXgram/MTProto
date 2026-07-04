@@ -111,6 +111,10 @@ class ClientServiceProvider extends ServiceProvider
         $this->app['client.listener']->middlewareGroup('client', [
             \LaraGram\MTProto\Listening\Middleware\ClientSubstituteBindings::class,
         ]);
+
+        $this->app['client.listener']->aliasMiddleware(
+            'direction', \LaraGram\MTProto\Listening\Middleware\Direction::class
+        );
     }
 
     protected function mergeConfig(): void

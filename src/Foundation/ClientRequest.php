@@ -364,6 +364,22 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
+     * Check whether this update represents a message sent by this session
+     * itself (an outgoing message), as opposed to one received from someone
+     * else (incoming).
+     */
+    public function isOutgoing(): bool
+    {
+        return match ($this->type) {
+            'updateShortSentMessage' => true,
+            'updateShortMessage', 'updateShortChatMessage' => !empty($this->data['out']),
+            'updateNewMessage', 'updateNewChannelMessage',
+            'updateEditMessage', 'updateEditChannelMessage' => !empty($this->data['message']['out']),
+            default => false,
+        };
+    }
+
+    /**
      * {@inheritdoc}
      *
      * The scope for an MTProto update is the **session** it arrived on, so a

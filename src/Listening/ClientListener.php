@@ -75,6 +75,21 @@ class ClientListener extends Listener
     }
 
     /**
+     * Create a new Listen object.
+     *
+     * @param array|string $methods
+     * @param string $pattern
+     * @param mixed $action
+     * @return \LaraGram\Listening\Listen
+     */
+    public function newListen($methods, $pattern, $action)
+    {
+        return (new ClientListen($methods, $pattern, $action))
+            ->setListener($this)
+            ->setContainer($this->container);
+    }
+
+    /**
      * Dynamically handle calls into the listener.
      *
      * @param string $method
@@ -93,7 +108,7 @@ class ClientListener extends Listener
             );
         }
 
-        if (in_array($method, ['forSessions', 'forConnections'], true)) {
+        if (in_array($method, ['forSessions', 'forConnections', 'incomming', 'outgoing'], true)) {
             return (new ClientListenRegistrar($this))->{$method}(...$parameters);
         }
 

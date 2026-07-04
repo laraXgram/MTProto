@@ -10,8 +10,8 @@ use LaraGram\Support\Facades\Facade;
  * Resolves to the 'client.listener' binding (ClientListener instance).
  *
  * === Messages ===
- * @method static \LaraGram\Listening\ListenRegistrar incomming()
- * @method static \LaraGram\Listening\ListenRegistrar outgoing()
+ * @method static \LaraGram\MTProto\Listening\ClientListenRegistrar incomming() 
+ * @method static \LaraGram\MTProto\Listening\ClientListenRegistrar outgoing() 
  * @method static \LaraGram\Listening\ListenRegistrar scope(string $scope)
  *
  * @method static \LaraGram\Listening\Listen onMessage(\Closure|array|string $action) Listen for all new messages
