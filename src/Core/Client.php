@@ -319,17 +319,12 @@ class Client
         $this->dcId = $newDcId;
         $this->freshAuthKey = false;
 
-        $newName = preg_replace('/dc\d+/', "dc{$newDcId}", $this->sessionName);
-        if ($newName === null || $newName === $this->sessionName) {
-            $newName = "user_dc{$newDcId}";
-        }
-        $this->sessionName = $newName;
-        $this->session = $this->makeSession($newName);
+        $this->session = $this->makeSession($this->sessionName);
 
         $this->connection = $this->makeConnection();
         $this->connectTcp();
 
-        if ($this->session->getAuthKey() === null) {
+        if ($this->session->getAuthKey() === null || $this->session->getDcId() !== $newDcId) {
             $this->generateAuthKey();
         } else {
             $this->session->regenerateSessionId();

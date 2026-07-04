@@ -155,16 +155,18 @@ class ClientManager
     }
 
     /**
-     * Delete a session file (for stale/invalid sessions).
+     * Delete a session (for stale/invalid sessions or an identity reset).
      */
     public function deleteSession(string $session = 'default'): bool
     {
         $config = $this->sessionConfig($session);
+
+        $this->resolveStore($config, 'session', '.session')?->forget($session);
+
         $dir = $this->resolveSessionPath($config);
         $file = rtrim($dir, '/') . '/' . $session . '.session';
-
         if (file_exists($file)) {
-            return unlink($file);
+            @unlink($file);
         }
 
         return true;

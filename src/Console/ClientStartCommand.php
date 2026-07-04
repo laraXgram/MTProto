@@ -89,9 +89,8 @@ class ClientStartCommand extends Command
             return null;
         }
 
-        // Lightweight call to validate the auth key; stale -> delete & re-auth.
         try {
-            $manager->client($session)->invoke('help.getConfig');
+            $manager->client($session)->invoke('updates.getState');
         } catch (\Throwable $e) {
             $msg = $e->getMessage();
 

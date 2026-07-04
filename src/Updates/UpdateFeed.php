@@ -81,6 +81,16 @@ class UpdateFeed
         $run();
     }
 
+    public function scheduleFetchDifference(): void
+    {
+        $this->runHandler(fn () => $this->fetchDifference());
+    }
+
+    private function scheduleFetchChannelDifference(int $channelId): void
+    {
+        $this->runHandler(fn () => $this->fetchChannelDifference($channelId));
+    }
+
     /**
      * Register the main update handler.
      *
@@ -530,7 +540,7 @@ class UpdateFeed
             $channelId = (int)($update['channel_id'] ?? 0);
             if ($channelId > 0) {
                 if ($this->state->getChannelPts($channelId) > 0) {
-                    $this->fetchChannelDifference($channelId);
+                    $this->scheduleFetchChannelDifference($channelId);
                 } elseif (isset($update['pts'])) {
                     $this->state->setChannelPts($channelId, (int)$update['pts']);
                     $this->state->save();
@@ -551,7 +561,7 @@ class UpdateFeed
                 }
                 if ($gap < 0) {
                     $this->channelPostponed[$channelId][] = $update;
-                    $this->fetchChannelDifference($channelId);
+                    $this->scheduleFetchChannelDifference($channelId);
                     return;
                 }
                 $this->state->setChannelPts($channelId, $update['pts']);
@@ -562,7 +572,7 @@ class UpdateFeed
                 }
                 if ($gap < 0) {
                     $this->postponed[] = $update;
-                    $this->fetchDifference();
+                    $this->scheduleFetchDifference();
                     return;
                 }
                 $this->state->setPts($update['pts']);

@@ -75,7 +75,17 @@ class PumpLoop
         $this->disconnectBootstrapSocket();
 
         $this->runtime->run(function (): void {
-            $this->boot();
+            try {
+                $this->boot();
+            } catch (\Throwable $e) {
+                $session = $this->client->getSessionName();
+                $this->logger?->error(
+                    "[client:{$session}] failed to start: {$e->getMessage()} "
+                    ."(if AUTH_KEY_UNREGISTERED, run: php laragram client:auth --session={$session})"
+                );
+                $this->stop();
+                return;
+            }
 
             $saveEvery = 30;
             $ticks = 0;
@@ -147,7 +157,7 @@ class PumpLoop
     private function onPushed(array $data): void
     {
         if (($data['_'] ?? '') === 'updatesTooLong') {
-            $this->feed->fetchDifference();
+            $this->feed->scheduleFetchDifference();
             return;
         }
 
