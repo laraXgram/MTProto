@@ -181,7 +181,7 @@ class UpdateState
             'updated_at' => time(),
         ];
 
-        $this->store->put($this->storeKey, json_encode($data, JSON_PRETTY_PRINT));
+        $this->store->put($this->storeKey, json_encode($data));
     }
 
     public function load(): void

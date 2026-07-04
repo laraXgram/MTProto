@@ -11,6 +11,13 @@ use LaraGram\MTProto\Runtime\Contracts\Table;
 
 final class StoreManager
 {
+    private const DEFAULT_TABLE_SPECS = [
+        'peer'    => ['table' => 'mtproto_peer',    'rows' => 16, 'size' => 1048576],
+        'session' => ['table' => 'mtproto_session', 'rows' => 16, 'size' => 16384],
+        'state'   => ['table' => 'mtproto_state',   'rows' => 16, 'size' => 131072],
+        'limit'   => ['table' => 'mtproto_limit',   'rows' => 16, 'size' => 262144],
+    ];
+
     /**
      * @param (callable(?string): Repository)|null    $cacheFactory
      * @param (callable(string, int, int): Table)|null $tableFactory
@@ -23,11 +30,32 @@ final class StoreManager
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @return array{table: string, rows: int, size: int}
      */
-    public function make(array $config): Store
+    public static function defaultTableSpec(string $name): array
+    {
+        return self::DEFAULT_TABLE_SPECS[$name] ?? ['table' => "mtproto_{$name}", 'rows' => 1024, 'size' => 8192];
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param string $name
+     */
+    public function make(array $config, string $name = 'mtproto'): Store
     {
         $driver = strtolower((string) ($config['driver'] ?? 'file'));
+
+        if ($driver === 'swoole-table' || $driver === 'swoole_table') {
+            $defaults = self::defaultTableSpec($name);
+
+            return new SwooleTableStore(
+                $this->table(
+                    (string) ($config['table'] ?? $defaults['table']),
+                    (int)    ($config['rows']  ?? $defaults['rows']),
+                    (int)    ($config['size']  ?? $defaults['size']),
+                )
+            );
+        }
 
         return match ($driver) {
             'file' => new FileStore(
@@ -46,14 +74,6 @@ final class StoreManager
             'database', 'redis' => new CacheStore(
                 $this->cache($driver),
                 (string) ($config['prefix'] ?? 'mtproto:'),
-            ),
-
-            'swoole-table', 'swoole_table' => new SwooleTableStore(
-                $this->table(
-                    (string) ($config['table'] ?? 'mtproto'),
-                    (int)    ($config['rows']  ?? 1024),
-                    (int)    ($config['size']  ?? 8192),
-                )
             ),
 
             default => throw new \InvalidArgumentException("Unknown store driver [{$driver}]."),

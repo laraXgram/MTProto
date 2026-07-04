@@ -7,6 +7,8 @@ namespace LaraGram\MTProto\Foundation;
 use LaraGram\Contracts\Foundation\Application;
 use LaraGram\MTProto\Auth\Authorization;
 use LaraGram\MTProto\Core\Client as MTProtoClient;
+use LaraGram\MTProto\Core\StoreRateLimiter;
+use LaraGram\MTProto\Core\TokenBucketRateLimiter;
 
 class ClientManager
 {
@@ -299,7 +301,7 @@ class ClientManager
         }
 
         $manager = $this->storeManager();
-        $primary = $manager->make($this->withFileDefaults($store, $config, $fileExt));
+        $primary = $manager->make($this->withFileDefaults($store, $config, $fileExt), $name);
 
         $seen = [strtolower((string)$store['driver'])];
         $legacy = [];
@@ -313,7 +315,7 @@ class ClientManager
             }
 
             $seen[] = $driver;
-            $legacy[] = $manager->make($this->withFileDefaults($fromCfg, $config, $fileExt));
+            $legacy[] = $manager->make($this->withFileDefaults($fromCfg, $config, $fileExt), $name);
         }
 
         $resolved = $legacy === []
@@ -357,10 +359,10 @@ class ClientManager
         $store = $this->resolveStore($config, 'limit', '.limits');
 
         if ($store !== null) {
-            return new \LaraGram\MTProto\Core\StoreRateLimiter($store, $rate, $capacity, "rl:{$session}:");
+            return new StoreRateLimiter($store, $rate, $capacity, "rl:{$session}");
         }
 
-        return new \LaraGram\MTProto\Core\TokenBucketRateLimiter($rate, $capacity);
+        return new TokenBucketRateLimiter($rate, $capacity);
     }
 
     /**

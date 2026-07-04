@@ -100,7 +100,7 @@ class PeerDatabase
             return;
         }
 
-        $json = json_encode(array_values($this->peers), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $json = json_encode(array_values($this->peers), JSON_UNESCAPED_UNICODE);
         $this->store->put($this->storeKey, $json);
         $this->dirty = false;
     }

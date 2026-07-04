@@ -62,7 +62,7 @@ class ClientServiceProvider extends ServiceProvider
         $added = false;
 
         foreach ($storeSets as $stores) {
-            foreach ($stores as $store) {
+            foreach ($stores as $storeName => $store) {
                 if (!is_array($store)) {
                     continue;
                 }
@@ -72,9 +72,10 @@ class ClientServiceProvider extends ServiceProvider
                     continue;
                 }
 
-                $name = (string) ($store['table'] ?? 'mtproto');
-                $rows = (int) ($store['rows'] ?? 1024);
-                $size = (int) ($store['size'] ?? 8192);
+                $defaults = \LaraGram\MTProto\Store\StoreManager::defaultTableSpec((string) $storeName);
+                $name = (string) ($store['table'] ?? $defaults['table']);
+                $rows = (int) ($store['rows'] ?? $defaults['rows']);
+                $size = (int) ($store['size'] ?? $defaults['size']);
                 $key = "{$name}:{$rows}";
 
                 if (!isset($tables[$key])) {

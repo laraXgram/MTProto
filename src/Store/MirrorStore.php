@@ -39,7 +39,11 @@ final class MirrorStore implements Store
 
     public function put(string $key, string $value): void
     {
-        $this->primary->put($key, $value);
+        try {
+            $this->primary->put($key, $value);
+        } catch (\Throwable) {
+            //
+        }
 
         foreach ($this->mirrors as $mirror) {
             try {

@@ -190,7 +190,10 @@ final class MessagePump
 
         // Fail any callers still parked on a result channel.
         foreach ($this->pending as $call) {
-            $call->channel->push(['_pump_error' => new MTProtoException('Pump stopped')]);
+            try {
+                $call->channel->push(['_pump_error' => new MTProtoException('Pump stopped')]);
+            } catch (\Throwable) {
+            }
         }
         $this->pending = [];
     }
