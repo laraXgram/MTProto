@@ -234,6 +234,15 @@ class FileDecoder
             'messageMediaDocument' => $this->resolveDocumentLocation($media),
             'photo' => $this->resolvePhotoDirectLocation($media, $thumbSize),
             'document' => $this->resolveDocumentDirectLocation($media),
+            'message' => isset($media['media']) && is_array($media['media'])
+                ? $this->resolveMediaLocation($media['media'], $thumbSize)
+                : null,
+            'messageMediaStory' => isset($media['story']['media']) && is_array($media['story']['media'])
+                ? $this->resolveMediaLocation($media['story']['media'], $thumbSize)
+                : null,
+            'storyItem' => isset($media['media']) && is_array($media['media'])
+                ? $this->resolveMediaLocation($media['media'], $thumbSize)
+                : null,
             default => null,
         };
     }
@@ -310,9 +319,8 @@ class FileDecoder
             return null;
         }
 
-        if (($targetSize['_'] ?? '') === 'photoCachedSize') {
-            // We can return the bytes directly — but caller expects a location.
-            // Fall through and build the location anyway (the server will serve it).
+        if (!isset($photo['id'], $photo['access_hash'])) {
+            throw new MTProtoException('Photo is missing id/access_hash — cannot build a download location (a "min" object needs re-resolving first).');
         }
 
         return [
@@ -320,7 +328,7 @@ class FileDecoder
                 '_' => 'inputPhotoFileLocation',
                 'id' => $photo['id'],
                 'access_hash' => $photo['access_hash'],
-                'file_reference' => $photo['file_reference'],
+                'file_reference' => $photo['file_reference'] ?? '',
                 'thumb_size' => $targetSize['type'] ?? '',
             ],
             'dc_id' => $photo['dc_id'] ?? $this->client->getDcId(),
@@ -346,12 +354,16 @@ class FileDecoder
      */
     protected function resolveDocumentDirectLocation(array $doc): ?array
     {
+        if (!isset($doc['id'], $doc['access_hash'])) {
+            throw new MTProtoException('Document is missing id/access_hash — cannot build a download location (a "min" object needs re-resolving first).');
+        }
+
         return [
             'location' => [
                 '_' => 'inputDocumentFileLocation',
                 'id' => $doc['id'],
                 'access_hash' => $doc['access_hash'],
-                'file_reference' => $doc['file_reference'],
+                'file_reference' => $doc['file_reference'] ?? '',
                 'thumb_size' => '',
             ],
             'dc_id' => $doc['dc_id'] ?? $this->client->getDcId(),
@@ -377,17 +389,26 @@ class FileDecoder
         try {
             $result = $this->fetchChunk($conn, $location, $offset, $limit);
         } catch (MTProtoException $e) {
+            $msg = $e->getMessage();
+
             if ($dcId > 0 && $dcId !== $this->client->getDcId()
-                && str_contains($e->getMessage(), 'AUTH_KEY_UNREGISTERED')) {
+                && str_contains($msg, 'AUTH_KEY_UNREGISTERED')) {
                 $pool->ensureAuthorized($dcId);
                 $result = $this->fetchChunk($conn, $location, $offset, $limit);
+            } elseif (str_contains($msg, 'FILE_REFERENCE_EXPIRED') || str_contains($msg, 'FILE_REFERENCE_INVALID')) {
+                throw new MTProtoException(
+                    'File reference expired — re-fetch the source message (getMessages) to obtain a fresh '
+                    . 'file_reference, then download again.',
+                    0,
+                    $e,
+                );
             } else {
                 throw $e;
             }
         }
 
         if (is_array($result) && ($result['_'] ?? '') === 'upload.fileCdnRedirect') {
-            throw new MTProtoException('CDN file redirects are not yet supported. Use cdn_supported=false.');
+            throw new MTProtoException('Server returned a CDN redirect, which is not supported by this downloader.');
         }
 
         return is_array($result) ? $result : ['bytes' => ''];

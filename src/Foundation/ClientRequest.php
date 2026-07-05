@@ -94,6 +94,26 @@ use LaraGram\Support\Traits\Macroable;
  * @method mixed sendVideo(string|int $peer, string $path, ?string $message = null, array $params = [])
  * @method mixed sendAudio(string|int $peer, string $path, ?string $message = null, array $params = [])
  * @method mixed sendVoice(string|int $peer, string $path, ?string $message = null, array $params = [])
+ * @method mixed sendRichMessage(string|int $peer, string $content, string $format = 'markdown', array $params = [])
+ * @method mixed forwardMessages(string|int $fromPeer, string|int $toPeer, int|array $ids, array $params = [])
+ * @method mixed copyMessages(string|int $fromPeer, string|int $toPeer, int|array $ids, array $params = [])
+ * @method mixed editMessage(string|int $peer, int $id, ?string $message = null, array $params = [])
+ * @method mixed getMessages(string|int $peer, int|array $ids)
+ * @method mixed markAsRead(string|int $peer, int $maxId = 0)
+ * @method mixed sendChatAction(string|int $peer, string $action = 'typing', array $params = [])
+ * @method mixed sendTyping(string|int $peer)
+ * @method mixed blockUser(string|int $peer)
+ * @method mixed unblockUser(string|int $peer)
+ * @method mixed getFullChat(string|int $peer)
+ * @method mixed banChatMember(string|int $peer, string|int $user, int $until = 0)
+ * @method mixed kickChatMember(string|int $peer, string|int $user)
+ * @method mixed promoteChatMember(string|int $peer, string|int $user, array|string $rights = [], string $rank = '')
+ * @method mixed restrictChatMember(string|int $peer, string|int $user, array|string $restrictions, int $until = 0)
+ * @method mixed sendReaction(string|int $peer, int $msgId, string|int|array|null $reaction = null, bool $big = false, bool $addToRecent = false)
+ * @method mixed getParticipants(string|int $peer, string $filter = 'recent', int $offset = 0, int $limit = 200, string $q = '')
+ * @method mixed downloadStory(string|int|array $peerOrStory, ?int $id = null, ?string $path = null)
+ * @method mixed sendStory(string|int $peer, string|array $media, array $params = [])
+ * @method mixed setProfilePhoto(string $path)
  *
  * @mixin \LaraGram\MTProto\Generated\ClientIdeHelper
  */
@@ -233,11 +253,95 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Get a FileDecoder instance for downloading files.
+     * Get the shared FileDecoder for this session (lazy, reused).
      */
     public function file(): FileDecoder
     {
-        return new FileDecoder($this->client());
+        return $this->client()->fileDecoder();
+    }
+
+    /**
+     * Download whatever media this update carries — photo, video, animation,
+     * document, voice, sticker, or story — no arguments needed. With `$path`
+     * it streams to disk and returns bytes written; otherwise returns the raw
+     * bytes.
+     *
+     * @return string|int bytes (no path) or bytes-written (with path)
+     */
+    public function download(?string $path = null, ?string $thumbSize = null): string|int
+    {
+        return $path === null
+            ? $this->downloadMedia($thumbSize)
+            : $this->downloadMediaToFile($path, $thumbSize);
+    }
+
+    /**
+     * The message this update carries, as a plain array — regardless of whether
+     * property access has already wrapped it into a TLObject.
+     */
+    private function messageArray(): ?array
+    {
+        $m = $this->data['message'] ?? null;
+        if ($m instanceof TLObject) {
+            return $m->toArray();
+        }
+
+        return is_array($m) ? $m : null;
+    }
+
+    /**
+     * The id of the message this update carries (null if none).
+     */
+    public function messageId(): ?int
+    {
+        $id = $this->messageArray()['id'] ?? $this->data['id'] ?? null;
+
+        return $id !== null ? (int) $id : null;
+    }
+
+    /**
+     * A resolver-friendly id for the chat this update belongs to, taken from
+     * the message's peer_id (user/chat/channel).
+     */
+    public function chatId(): ?int
+    {
+        $peer = $this->messageArray()['peer_id']
+            ?? $this->data['peer_id']
+            ?? $this->data['peer']
+            ?? null;
+        if ($peer instanceof TLObject) {
+            $peer = $peer->toArray();
+        }
+        if (!is_array($peer)) {
+            return null;
+        }
+
+        $id = $peer['user_id'] ?? $peer['channel_id'] ?? $peer['chat_id'] ?? null;
+
+        return $id !== null ? (int) $id : null;
+    }
+
+    /**
+     * Mark this chat's history read up to the current message — i.e. put a
+     * "seen" tick on the user's message. Routes to channels/messages readHistory
+     * as appropriate.
+     */
+    public function read(): mixed
+    {
+        $peer = $this->chatId();
+        if ($peer === null) {
+            throw new \RuntimeException('No chat on this update to mark as read');
+        }
+
+        return $this->client()->markAsRead($peer, $this->messageId() ?? 0);
+    }
+
+    /**
+     * Alias of {@see read()} — mark the user's message as seen.
+     */
+    public function seen(): mixed
+    {
+        return $this->read();
     }
 
     /**
@@ -248,12 +352,26 @@ class ClientRequest implements ProvidesListenContext
      */
     public function downloadMedia(?string $thumbSize = null): string
     {
-        $media = $this->data['message']['media'] ?? $this->data['media'] ?? null;
+        $media = $this->mediaArray();
         if ($media === null) {
             throw new \RuntimeException('No media found in this update');
         }
 
         return $this->file()->downloadMedia($media, $thumbSize);
+    }
+
+    /**
+     * The media attached to this update, as a plain array, tolerant of TLObject
+     * wrapping from prior property access.
+     */
+    private function mediaArray(): ?array
+    {
+        $media = $this->messageArray()['media'] ?? $this->data['media'] ?? null;
+        if ($media instanceof TLObject) {
+            return $media->toArray();
+        }
+
+        return is_array($media) ? $media : null;
     }
 
     /**
@@ -265,7 +383,7 @@ class ClientRequest implements ProvidesListenContext
      */
     public function downloadMediaToFile(string $path, ?string $thumbSize = null): int
     {
-        $media = $this->data['message']['media'] ?? $this->data['media'] ?? null;
+        $media = $this->mediaArray();
         if ($media === null) {
             throw new \RuntimeException('No media found in this update');
         }
@@ -281,7 +399,7 @@ class ClientRequest implements ProvidesListenContext
      */
     public function getMediaInfo(?string $thumbSize = null): ?array
     {
-        $media = $this->data['message']['media'] ?? $this->data['media'] ?? null;
+        $media = $this->mediaArray();
         if ($media === null) {
             return null;
         }

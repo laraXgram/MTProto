@@ -134,8 +134,70 @@ class PeerResolver
             );
         }
 
-        $username = strtolower(ltrim(trim($peer), '@'));
+        $ref = $this->parseReference($peer);
 
+        return match ($ref['kind']) {
+            'phone' => $this->resolveByPhone($ref['value']),
+            'invite' => $this->resolveByInvite($ref['value']),
+            default => $this->resolveByUsername($ref['value']),
+        };
+    }
+
+    /**
+     * Classify a string peer reference into a username, phone, or invite hash.
+     * Understands @handle, bare handle, t.me / telegram.me / telegram.dog links
+     * (username, `+hash`, `joinchat/hash`), and tg:// deep links.
+     *
+     * @return array{kind: string, value: string}
+     */
+    public function parseReference(string $ref): array
+    {
+        $ref = trim($ref);
+        $lower = strtolower($ref);
+
+        if (str_starts_with($lower, 'tg://')) {
+            if (preg_match('~[?&]invite=([A-Za-z0-9_-]+)~', $ref, $m)) {
+                return ['kind' => 'invite', 'value' => $m[1]];
+            }
+            if (preg_match('~[?&]domain=([A-Za-z0-9_]+)~', $ref, $m)) {
+                return ['kind' => 'username', 'value' => strtolower($m[1])];
+            }
+            if (preg_match('~[?&]phone=\+?(\d+)~', $ref, $m)) {
+                return ['kind' => 'phone', 'value' => $m[1]];
+            }
+        }
+
+        if (preg_match('~(?:https?://)?(?:t(?:elegram)?\.me|telegram\.dog)/(.+)~i', $ref, $m)) {
+            $path = ltrim($m[1], '/');
+
+            if (preg_match('~^joinchat/([A-Za-z0-9_-]+)~i', $path, $mm)) {
+                return ['kind' => 'invite', 'value' => $mm[1]];
+            }
+            if (preg_match('~^\+([A-Za-z0-9_-]+)~', $path, $mm)) {
+                // t.me/+<digits> is a phone deep link; +<mixed> is an invite hash.
+                return ctype_digit($mm[1])
+                    ? ['kind' => 'phone', 'value' => $mm[1]]
+                    : ['kind' => 'invite', 'value' => $mm[1]];
+            }
+
+            $seg = preg_split('~[/?#]~', $path)[0] ?? '';
+            if ($seg !== '') {
+                return ['kind' => 'username', 'value' => strtolower(ltrim($seg, '@'))];
+            }
+        }
+
+        if (str_starts_with($ref, '+') && ctype_digit(substr($ref, 1))) {
+            return ['kind' => 'phone', 'value' => substr($ref, 1)];
+        }
+
+        return ['kind' => 'username', 'value' => strtolower(ltrim($ref, '@'))];
+    }
+
+    /**
+     * @throws MTProtoException
+     */
+    private function resolveByUsername(string $username): array
+    {
         $entry = $this->peerDb->getByUsername($username);
         if ($entry !== null) {
             return $entry;
@@ -149,6 +211,86 @@ class PeerResolver
         }
 
         throw new MTProtoException("Username @{$username} not found");
+    }
+
+    /**
+     * @throws MTProtoException
+     */
+    private function resolveByPhone(string $phone): array
+    {
+        try {
+            $result = $this->client->invokeRaw('contacts.resolvePhone', ['phone' => $phone]);
+        } catch (\Throwable $e) {
+            throw new MTProtoException("Failed to resolve phone +{$phone}: {$e->getMessage()}", 0, $e);
+        }
+
+        $this->peerDb->cachePeersFromResponse($result);
+        $this->peerDb->save();
+
+        $entry = $this->entryFromResolvedPeer($result);
+        if ($entry !== null) {
+            return $entry;
+        }
+
+        throw new MTProtoException("Phone +{$phone} did not resolve to a reachable peer");
+    }
+
+    /**
+     * @throws MTProtoException
+     */
+    private function resolveByInvite(string $hash): array
+    {
+        $result = $this->checkInvite($hash);
+        $ctor = $result['_'] ?? '';
+
+        if (in_array($ctor, ['chatInviteAlready', 'chatInvitePeek'], true) && isset($result['chat']) && is_array($result['chat'])) {
+            $this->peerDb->addFromTL($result['chat']);
+            $this->peerDb->save();
+
+            $id = $result['chat']['id'] ?? null;
+            if ($id !== null) {
+                $entry = $this->peerDb->getPeer((int) $id);
+                if ($entry !== null) {
+                    return $entry;
+                }
+            }
+        }
+
+        throw new MTProtoException(
+            "Invite hash {$hash} points to a chat this account has not joined — call joinChat() first."
+        );
+    }
+
+    /**
+     * Inspect an invite hash without joining (`messages.checkChatInvite`).
+     *
+     * @throws MTProtoException
+     */
+    public function checkInvite(string $hash): array
+    {
+        try {
+            $result = $this->client->invokeRaw('messages.checkChatInvite', ['hash' => $hash]);
+        } catch (\Throwable $e) {
+            throw new MTProtoException("Failed to check invite {$hash}: {$e->getMessage()}", 0, $e);
+        }
+
+        return is_array($result) ? $result : [];
+    }
+
+    /**
+     * Extract the cached peer entry named by a `contacts.resolvedPeer`-shaped
+     * response ({peer, chats, users}).
+     */
+    private function entryFromResolvedPeer(array $result): ?array
+    {
+        $peer = $result['peer'] ?? null;
+        if (!is_array($peer)) {
+            return null;
+        }
+
+        $id = $peer['user_id'] ?? $peer['channel_id'] ?? $peer['chat_id'] ?? null;
+
+        return $id !== null ? $this->peerDb->getPeer((int) $id) : null;
     }
 
     /**

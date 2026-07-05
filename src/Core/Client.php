@@ -26,6 +26,17 @@ use LaraGram\Log\LoggerInterface;
 use LaraGram\MTProto\Session\FileSession;
 use LaraGram\MTProto\TL\TLParser;
 use LaraGram\MTProto\Generated\ClientMethods;
+use LaraGram\MTProto\Core\Concerns\ManagesChats;
+use LaraGram\MTProto\Core\Concerns\IteratesChats;
+use LaraGram\MTProto\Core\Concerns\HandlesEngagement;
+use LaraGram\MTProto\Core\Concerns\HandlesStories;
+use LaraGram\MTProto\Core\Concerns\HandlesStars;
+use LaraGram\MTProto\Core\Concerns\HandlesDrafts;
+use LaraGram\MTProto\Core\Concerns\DownloadsMedia;
+use LaraGram\MTProto\Core\Concerns\MessagingExtras;
+use LaraGram\MTProto\Core\Concerns\ManagesProfile;
+use LaraGram\MTProto\Core\Concerns\BotControls;
+use LaraGram\MTProto\Core\Concerns\PremiumFeatures;
 use LaraGram\MTProto\Transport\AbridgedTransport;
 use LaraGram\MTProto\Transport\FakeTlsConnection;
 use LaraGram\MTProto\Transport\IntermediatePaddedTransport;
@@ -38,6 +49,17 @@ use LaraGram\MTProto\Transport\ProxySettings;
 class Client
 {
     use ClientMethods;
+    use ManagesChats;
+    use IteratesChats;
+    use HandlesEngagement;
+    use HandlesStories;
+    use HandlesStars;
+    use HandlesDrafts;
+    use DownloadsMedia;
+    use MessagingExtras;
+    use ManagesProfile;
+    use BotControls;
+    use PremiumFeatures;
 
     public const VERSION = '1.0.0-dev';
     public const LAYER = 227;
@@ -416,6 +438,18 @@ class Client
         }
 
         return $result;
+    }
+
+    /**
+     * Fetch the currently authenticated user.
+     *
+     * @return array
+     */
+    public function getMe(): array
+    {
+        $users = $this->invoke('users.getUsers', ['id' => [['_' => 'inputUserSelf']]]);
+
+        return $users[0] ?? [];
     }
 
     /**
