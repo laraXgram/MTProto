@@ -37,6 +37,7 @@ use LaraGram\MTProto\Core\Concerns\MessagingExtras;
 use LaraGram\MTProto\Core\Concerns\ManagesProfile;
 use LaraGram\MTProto\Core\Concerns\BotControls;
 use LaraGram\MTProto\Core\Concerns\PremiumFeatures;
+use LaraGram\MTProto\Core\Concerns\ManagesForum;
 use LaraGram\MTProto\Transport\AbridgedTransport;
 use LaraGram\MTProto\Transport\FakeTlsConnection;
 use LaraGram\MTProto\Transport\IntermediatePaddedTransport;
@@ -60,6 +61,7 @@ class Client
     use ManagesProfile;
     use BotControls;
     use PremiumFeatures;
+    use ManagesForum;
 
     public const VERSION = '1.0.0-dev';
     public const LAYER = 227;
