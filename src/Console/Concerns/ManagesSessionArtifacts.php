@@ -29,7 +29,7 @@ trait ManagesSessionArtifacts
         $path = (string) ($this->option('path') ?: '');
 
         if ($path === '') {
-            return storage_path('app/clients/sessions');
+            return (string) (config('mtproto.session.path') ?: storage_path('app/clients/sessions'));
         }
 
         if (!str_starts_with($path, '/')) {

@@ -124,7 +124,7 @@ class SessionImportCommand extends Command
         $path = (string) ($this->option('path') ?: '');
 
         if ($path === '') {
-            $path = storage_path('mtproto/sessions');
+            $path = (string) (config('mtproto.session.path') ?: storage_path('app/clients/sessions'));
         } elseif (!str_starts_with($path, '/')) {
             $path = base_path(ltrim($path, './'));
         }
