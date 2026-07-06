@@ -43,71 +43,39 @@ class ClientListenRegistrar extends ListenRegistrar
         ));
     }
 
+    /**
+     * Register a listen through the listener, carrying this registrar's
+     * attributes (middleware, session scope, …) via a transient group.
+     *
+     * @param  string  $method
+     * @param  mixed  ...$parameters
+     * @return \LaraGram\Listening\Listen
+     */
+    protected function registerListen($method, ...$parameters)
+    {
+        $listen = null;
+
+        $this->listener->group($this->attributes, function () use ($method, $parameters, &$listen) {
+            $listen = $this->listener->{$method}(...$parameters);
+        });
+
+        return $listen;
+    }
+
 
     /**
-     * The methods to dynamically pass through to the listener.
+     * Dynamically handle calls into the registrar.
      *
-     * @var string[]
+     * @param  string  $method
+     * @param  array  $parameters
+     * @return \LaraGram\Listening\Listen|$this
      */
-    protected $passthru = [
-        // Messages
-        'onmessage', 'ontext', 'oneditedmessage', 'ondeletedmessages',
-        'onpinnedmessages', 'onscheduledmessage',
+    public function __call($method, $parameters)
+    {
+        if (str_starts_with(strtolower($method), 'on')) {
+            return $this->registerListen($method, ...$parameters);
+        }
 
-        // Media-filtered
-        'onphoto', 'onvideo', 'onanimation', 'onsticker', 'ondocument',
-        'onaudio', 'onvoice', 'onvideonote', 'oncontact', 'onlocation',
-        'onvenue', 'ongame', 'ondice',
-
-        // Callback / Inline
-        'oncallbackquery', 'oncallbackquerydata', 'oninlinequery', 'onchoseninlineresult',
-
-        // Typing / Read
-        'ontyping', 'onreadhistory',
-
-        // Reactions
-        'onreactions',
-
-        // Users
-        'onuserstatus',
-
-        // Participants
-        'onchatparticipant', 'onchatjoinrequest', 'onchatboost',
-
-        // Polls
-        'onpoll', 'onpollvote',
-
-        // Payments
-        'onprecheckoutquery', 'onshippingquery',
-
-        // Phone / Group calls
-        'onphonecall', 'ongroupcall',
-
-        // Stories
-        'onstory',
-
-        // Encrypted
-        'onencryptedmessage',
-
-        // Drafts
-        'ondraft',
-
-        // Notifications
-        'onservicenotification',
-
-        // Peers
-        'onpeerblocked',
-
-        // Bots
-        'onbotstopped', 'onbotcommands', 'onbotreaction',
-
-        // Bot Business
-        'onbusinessmessage', 'onbusinessconnect',
-
-        // Forum
-        'onforumtopic',
-
-        // Catch-all
-        'onupdate',
-    ];
+        return parent::__call($method, $parameters);
+    }
 }

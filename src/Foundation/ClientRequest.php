@@ -9,6 +9,7 @@ use LaraGram\Listening\Contracts\ProvidesListenContext;
 use LaraGram\MTProto\Core\Client;
 use LaraGram\MTProto\Generated\Types;
 use LaraGram\MTProto\TL\TLObject;
+use LaraGram\Support\Str;
 use LaraGram\Support\Traits\Conditionable;
 use LaraGram\Support\Traits\Macroable;
 
@@ -122,11 +123,6 @@ class ClientRequest implements ProvidesListenContext
     use Conditionable, Macroable;
 
     /**
-     * Verbs whose matchable value is the message text (`message.message`).
-     */
-    private const TEXT_VERBS = ['NEW_MESSAGE', 'EDIT_MESSAGE', 'SCHEDULED_MESSAGE'];
-
-    /**
      * The raw MTProto update data.
      */
     protected array $data;
@@ -137,12 +133,13 @@ class ClientRequest implements ProvidesListenContext
     protected string $type;
 
     /**
-     * The resolved verb (e.g. 'NEW_MESSAGE').
+     * The verb this dispatch pass runs under (one of ClientType's 8 verbs).
      */
     protected ?string $verb = null;
 
     /**
-     * Override verb for media-filtered dispatch (e.g. 'PHOTO', 'VIDEO').
+     * Back-compat alias kept for callers that set a media-filtered verb.
+     * @deprecated use setListenVerb()
      */
     protected ?string $mediaVerb = null;
 
@@ -408,7 +405,7 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Get the verb for the Listening system.
+     * Get the verb for the Listening system
      */
     public function method(): string
     {
@@ -416,17 +413,21 @@ class ClientRequest implements ProvidesListenContext
             return $this->mediaVerb;
         }
 
-        if ($this->verb !== null) {
-            return $this->verb;
-        }
-
-        $this->verb = ClientType::verbFromConstructor($this->type);
-
-        return $this->verb;
+        return $this->verb ??= ClientType::UPDATE->name;
     }
 
     /**
-     * Set an override verb for media-filtered dispatch.
+     * Set the verb for this dispatch pass (UPDATE, TEXT, MESSAGE, DICE, …).
+     */
+    public function setListenVerb(string $verb): static
+    {
+        $this->verb = $verb;
+        return $this;
+    }
+
+    /**
+     * Back-compat: set a media-filtered verb. Prefer setListenVerb().
+     * @deprecated
      */
     public function setMediaVerb(string $verb): static
     {
@@ -440,6 +441,41 @@ class ClientRequest implements ProvidesListenContext
     public function isMethod(string $method): bool
     {
         return $this->method() === $method;
+    }
+
+    /**
+     * Shared per-update dispatch state, so the several verb passes an update
+     * fans out into agree on whether a primary listen has already handled it.
+     * `{ done: bool }`.
+     */
+    protected ?object $dispatchState = null;
+
+    /**
+     * Attach the shared dispatch state (set once per incoming update).
+     */
+    public function setDispatchState(object $state): static
+    {
+        $this->dispatchState = $state;
+        return $this;
+    }
+
+    /**
+     * Whether a non-overlap primary listen has already handled this update in
+     * an earlier verb pass.
+     */
+    public function dispatchDone(): bool
+    {
+        return (bool) ($this->dispatchState->done ?? false);
+    }
+
+    /**
+     * Mark this update as handled by a primary listen.
+     */
+    public function markDispatchDone(): void
+    {
+        if ($this->dispatchState !== null) {
+            $this->dispatchState->done = true;
+        }
     }
 
     /**
@@ -461,16 +497,49 @@ class ClientRequest implements ProvidesListenContext
      */
     public function listenValue(string $verb): ?string
     {
-        if (in_array($verb, self::TEXT_VERBS, true)) {
-            return $this->data['message']['message'] ?? null;
-        }
-
         return match ($verb) {
-            'CALLBACK_QUERY' => $this->data['data'] ?? null,
-            'INLINE_QUERY' => $this->data['query'] ?? null,
-            'CHOSEN_INLINE_RESULT' => $this->data['query'] ?? null,
+            'UPDATE' => ClientType::eventKey($this->type),
+
+            'MESSAGE' => $this->contentType(),
+
+            'TEXT' => $this->text(),
+            'COMMAND' => ($t = $this->text()) !== null ? Str::replaceFirst('/', '', $t) : null,
+            'REFERRAL' => ($t = $this->text()) !== null ? Str::replaceFirst('/start ', '', $t) : null,
+
+            'CALLBACK_DATA' => $this->callbackData(),
+
+            'DICE' => $this->diceValue(),
+
             default => null,
         };
+    }
+
+    /**
+     * The media content type of this message (photo/video/…), or null.
+     */
+    protected function contentType(): ?string
+    {
+        $message = $this->data['message'] ?? null;
+
+        if (!is_array($message)) {
+            return null;
+        }
+
+        return ClientType::mediaTypeFromMessage($message);
+    }
+
+    /**
+     * The dice value as "emoji,value" for the DICE matcher.
+     */
+    protected function diceValue(): ?string
+    {
+        $media = $this->data['message']['media'] ?? null;
+
+        if (!is_array($media) || ($media['_'] ?? '') !== 'messageMediaDice') {
+            return null;
+        }
+
+        return ($media['emoticon'] ?? '') . ',' . ($media['value'] ?? 0);
     }
 
     /**

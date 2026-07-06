@@ -10,9 +10,10 @@ use LaraGram\Listening\Listen;
 use LaraGram\Listening\ListenCollection;
 use LaraGram\Listening\Listener;
 use LaraGram\Listening\Pipeline;
+use LaraGram\Listening\Contracts\ProvidesListenContext;
 use LaraGram\MTProto\Core\Client as MTProtoClient;
 use LaraGram\MTProto\Foundation\ClientHandlerTrait;
-use LaraGram\MTProto\Foundation\ClientType;
+use LaraGram\MTProto\Foundation\ClientRequest;
 use LaraGram\Support\Str;
 
 class ClientListener extends Listener
@@ -41,11 +42,36 @@ class ClientListener extends Listener
      */
     public function fallback($action)
     {
-        $placeholder = 'clientFallbackPlaceholder';
+        return $this->addListen('UPDATE', '*', $action)->fallback();
+    }
 
-        return $this->addListen(
-            ClientType::verbs(), "{{$placeholder}}", $action
-        )->where($placeholder, '.*')->fallback();
+    /**
+     * Dispatch an update to a listen, enforcing single-primary semantics.
+     *
+     * @param \LaraGram\Listening\Contracts\ProvidesListenContext $request
+     * @return mixed
+     */
+    public function dispatchToListen(ProvidesListenContext $request)
+    {
+        $listen = $this->findListen($request);
+
+        $isClient = $request instanceof ClientRequest;
+
+        $suppress = $isClient && $request->dispatchDone() && ! $listen->overlap;
+
+        if ($suppress) {
+            $response = $this->prepareResponse($request, null);
+        } else {
+            $response = $this->runListen($request, $listen);
+
+            if ($isClient && ! $listen->isFallback && ! $listen->overlap) {
+                $request->markDispatchDone();
+            }
+        }
+
+        $this->runOverlapListens($request, $listen);
+
+        return $response;
     }
 
     /**

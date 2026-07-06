@@ -28,21 +28,44 @@ class ClientDispatcher
         try {
             $updateData = $update->toArray();
 
-            $this->handle($kernel, $updateData, $type, $session);
+            $passes = [];
 
-            if (in_array($type, [
-                'updateNewMessage', 'updateNewChannelMessage',
-                'updateEditMessage', 'updateEditChannelMessage',
-            ], true)) {
+            if (ClientType::isMessage($type)) {
                 $message = $updateData['message'] ?? $updateData;
+                $text = is_array($message) ? ($message['message'] ?? '') : '';
+
+                if (is_string($text) && str_starts_with($text, '/')) {
+                    $passes[] = ClientType::COMMAND->name;
+                    $passes[] = ClientType::REFERRAL->name;
+                }
 
                 if (is_array($message) && isset($message['media'])) {
-                    $mediaVerb = ClientType::mediaTypeFromMessage($message);
+                    if (($message['media']['_'] ?? '') === 'messageMediaDice') {
+                        $passes[] = ClientType::DICE->name;
+                    }
 
-                    if ($mediaVerb !== null) {
-                        $this->handle($kernel, $updateData, $type, $session, strtoupper($mediaVerb));
+                    if (ClientType::mediaTypeFromMessage($message) !== null) {
+                        $passes[] = ClientType::MESSAGE->name;
                     }
                 }
+
+                if (is_array($message) && !empty($message['entities'])) {
+                    $passes[] = ClientType::ENTITIES->name;
+                }
+
+                $passes[] = ClientType::TEXT->name;
+            }
+
+            if (ClientType::isCallback($type)) {
+                $passes[] = ClientType::CALLBACK_DATA->name;
+            }
+
+            $passes[] = ClientType::UPDATE->name;
+
+            $state = (object) ['done' => false];
+
+            foreach ($passes as $verb) {
+                $this->handle($kernel, $updateData, $type, $session, $verb, $state);
             }
         } catch (Throwable $e) {
             $this->logError($session, $type, $e);
@@ -75,15 +98,20 @@ class ClientDispatcher
         array        $updateData,
         string       $type,
         string       $session,
-        ?string      $mediaVerb = null,
+        ?string      $verb = null,
+        ?object      $state = null,
     ): void
     {
         $request = ClientRequest::fromUpdate($updateData, $type, $session);
 
         $request->setClient($this->app['mtproto.manager']->client($session));
 
-        if ($mediaVerb !== null) {
-            $request->setMediaVerb($mediaVerb);
+        if ($verb !== null) {
+            $request->setListenVerb($verb);
+        }
+
+        if ($state !== null) {
+            $request->setDispatchState($state);
         }
 
         try {
