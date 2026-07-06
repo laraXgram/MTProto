@@ -20,7 +20,7 @@ class SessionEncryptCommand extends Command
         {--session= : Session name (default: every session in the directory)}
         {--key= : The encryption key (generated when omitted)}
         {--cipher= : The encryption cipher (default AES-256-CBC)}
-        {--path= : Sessions directory (default: storage/mtproto/sessions)}
+        {--path= : Sessions directory (default: storage/app/clients/sessions)}
         {--prune : Delete the plaintext originals after encrypting}
         {--force : Overwrite existing .encrypted files}';
 
