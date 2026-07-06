@@ -39,6 +39,7 @@ use LaraGram\MTProto\Core\Concerns\BotControls;
 use LaraGram\MTProto\Core\Concerns\PremiumFeatures;
 use LaraGram\MTProto\Core\Concerns\ManagesForum;
 use LaraGram\MTProto\Core\Concerns\HandlesTakeout;
+use LaraGram\MTProto\Core\Concerns\HandlesSecretChats;
 use LaraGram\MTProto\Transport\AbridgedTransport;
 use LaraGram\MTProto\Transport\FakeTlsConnection;
 use LaraGram\MTProto\Transport\IntermediatePaddedTransport;
@@ -64,6 +65,7 @@ class Client
     use PremiumFeatures;
     use ManagesForum;
     use HandlesTakeout;
+    use HandlesSecretChats;
 
     public const VERSION = '1.0.0-dev';
     public const LAYER = 227;
