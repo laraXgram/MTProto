@@ -202,6 +202,7 @@ class ClientServiceProvider extends ServiceProvider
                 \LaraGram\MTProto\Console\SessionImportCommand::class,
                 \LaraGram\MTProto\Console\SessionEncryptCommand::class,
                 \LaraGram\MTProto\Console\SessionDecryptCommand::class,
+                \LaraGram\MTProto\Console\SessionListCommand::class,
             ]);
         }
     }
