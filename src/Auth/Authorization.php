@@ -63,6 +63,15 @@ class Authorization
     }
 
     /**
+     * Force the "2FA password needed" state so {@see checkPassword()} can run
+     * after a non-phone login (QR / token) surfaced SESSION_PASSWORD_NEEDED.
+     */
+    public function requirePassword(): void
+    {
+        $this->state = self::STATE_WAITING_PASSWORD;
+    }
+
+    /**
      * Send verification code to phone.
      *
      * @param string $phoneNumber Phone number in international format
@@ -85,9 +94,11 @@ class Authorization
             if (preg_match('/PHONE_MIGRATE_(\d+)/', $e->getMessage(), $matches)) {
                 $newDcId = (int) $matches[1];
 
-                // Switch to the correct DC
-                if (!$this->client->switchDc($newDcId)) {
-                    throw new MTProtoException("Failed to switch to DC{$newDcId}");
+                // Switch to the correct DC (void; throws on failure).
+                try {
+                    $this->client->switchDc($newDcId);
+                } catch (\Throwable $se) {
+                    throw new MTProtoException("Failed to switch to DC{$newDcId}: {$se->getMessage()}");
                 }
 
                 // Retry sendCode on the new DC
@@ -266,16 +277,37 @@ class Authorization
      * @param string $token Bot token from @BotFather
      * @return array Bot user info
      */
-    public function botLogin(string $token): array
+    public function botLogin(string $token, bool $allowMigrate = true): array
     {
         $token = trim($token);
 
-        $result = $this->client->invoke('auth.importBotAuthorization', [
-            'flags' => 0,
-            'api_id' => $this->client->getApiId(),
-            'api_hash' => $this->client->getApiHash(),
-            'bot_auth_token' => $token,
-        ]);
+        if ($token === '') {
+            throw new MTProtoException('Bot token is empty.');
+        }
+
+        try {
+            $result = $this->client->invoke('auth.importBotAuthorization', [
+                'flags' => 0,
+                'api_id' => $this->client->getApiId(),
+                'api_hash' => $this->client->getApiHash(),
+                'bot_auth_token' => $token,
+            ]);
+        } catch (MTProtoException $e) {
+            // Bots migrate via USER_MIGRATE_X (not PHONE_MIGRATE).
+            if ($allowMigrate && preg_match('/USER_MIGRATE_(\d+)/', $e->getMessage(), $m)) {
+                $newDcId = (int) $m[1];
+
+                try {
+                    $this->client->switchDc($newDcId); // void; throws on failure
+                } catch (\Throwable $se) {
+                    throw new MTProtoException("Failed to switch to DC{$newDcId} for bot login: {$se->getMessage()}");
+                }
+
+                return $this->botLogin($token, allowMigrate: false);
+            }
+
+            throw $e;
+        }
 
         $this->state = self::STATE_AUTHORIZED;
         return $result;
@@ -293,6 +325,39 @@ class Authorization
             'api_hash' => $this->client->getApiHash(),
             'except_ids' => [],
         ]);
+    }
+
+    /**
+     * Complete a QR login after the server signalled a DC migration.
+     *
+     * @return array auth.loginTokenSuccess | auth.loginToken
+     */
+    public function importLoginToken(string $token, ?int $dcId = null): array
+    {
+        if ($dcId !== null && $dcId !== $this->client->getDcId()) {
+            try {
+                $this->client->switchDc($dcId); // void; throws on failure
+            } catch (\Throwable $se) {
+                throw new MTProtoException("Failed to switch to DC{$dcId} for QR login: {$se->getMessage()}");
+            }
+        }
+
+        $result = $this->client->invoke('auth.importLoginToken', ['token' => $token]);
+
+        if (($result['_'] ?? '') === 'auth.loginTokenSuccess') {
+            $this->state = self::STATE_AUTHORIZED;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Build the `tg://login?token=…` URL a Telegram app scans to link this
+     * session (Settings → Devices → Link Desktop Device).
+     */
+    public function loginTokenUrl(string $rawToken): string
+    {
+        return 'tg://login?token=' . rtrim(strtr(base64_encode($rawToken), '+/', '-_'), '=');
     }
 
     /**
