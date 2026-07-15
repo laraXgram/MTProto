@@ -715,7 +715,7 @@ class Client
      */
     public function fileId(array $media): string
     {
-        // Accept a whole message — dig out its .media for convenience.
+        // Accept a whole message - dig out its .media for convenience.
         if (($media['_'] ?? '') === 'message' && isset($media['media']) && is_array($media['media'])) {
             $media = $media['media'];
         }
@@ -877,7 +877,7 @@ class Client
                 if ($wait !== null) {
                     if ($this->floodSleep && $wait <= $this->floodSleepLimit) {
                         $jitter = mt_rand(0, 1000) / 1000.0;
-                        $this->logger?->info("{$method}: flood wait {$wait}s — sleeping then retrying");
+                        $this->logger?->info("{$method}: flood wait {$wait}s - sleeping then retrying");
                         $this->backoffSleep($wait + $jitter);
                         continue;
                     }
@@ -888,7 +888,7 @@ class Client
                     if (++$retries > $this->maxRetries) {
                         throw $e;
                     }
-                    $this->logger?->warning("{$method}: AUTH_KEY_DUPLICATED — regenerating session");
+                    $this->logger?->warning("{$method}: AUTH_KEY_DUPLICATED - regenerating session");
                     $this->session->regenerateSessionId();
                     $this->reconnect();
                     continue;
@@ -901,7 +901,7 @@ class Client
 
                     $base = min(2 ** ($retries - 1), 8);
                     $delay = $base / 2 + (mt_rand(0, 1000) / 1000.0) * ($base / 2);
-                    $this->logger?->warning("{$method}: transient error '{$message}' — retry {$retries}/{$this->maxRetries} in " . round($delay, 2) . 's');
+                    $this->logger?->warning("{$method}: transient error '{$message}' - retry {$retries}/{$this->maxRetries} in " . round($delay, 2) . 's');
                     $this->backoffSleep($delay);
                     continue;
                 }
@@ -1022,7 +1022,7 @@ class Client
     private function ensureConnected(): void
     {
         if (!$this->connected) {
-            throw new MTProtoException('Not connected — call connect() first');
+            throw new MTProtoException('Not connected - call connect() first');
         }
     }
 

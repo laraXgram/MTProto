@@ -57,10 +57,6 @@ class TLObject implements \ArrayAccess, \JsonSerializable, \IteratorAggregate, \
         $this->data = $data;
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    //  Property access — auto-wraps nested TL objects
-    // ════════════════════════════════════════════════════════════════════
-
     public function __get(string $name): mixed
     {
         if (!array_key_exists($name, $this->data)) {
@@ -93,10 +89,6 @@ class TLObject implements \ArrayAccess, \JsonSerializable, \IteratorAggregate, \
     {
         return array_key_exists($name, $this->data);
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  Factory — resolve '_' constructor to the right Type subclass
-    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Create the appropriate Type subclass from a raw TL array.

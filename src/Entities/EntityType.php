@@ -8,7 +8,7 @@ namespace LaraGram\MTProto\Entities;
  * Bot-API entity type ⇄ MTProto MessageEntity constructor registry.
  *
  * Covers every Bot-API entity type. Some are output-only (auto-detected by the
- * server from plain text — mention, hashtag, cashtag, bot_command, url, email,
+ * server from plain text - mention, hashtag, cashtag, bot_command, url, email,
  * phone_number, bank_card), so they appear in received messages but are never
  * something a sender marks up. `date_time` is Bot-API-only with no MTProto
  * constructor. `blockquote`/`expandable_blockquote` share one TL constructor,

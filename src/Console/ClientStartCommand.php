@@ -17,7 +17,7 @@ use LaraGram\MTProto\Updates\PumpLoop;
 class ClientStartCommand extends Command
 {
     protected $signature = 'client:start
-        {--session=default : Session name(s) to start — comma-separated for several}
+        {--session=default : Session name(s) to start - comma-separated for several}
         {--all : Start every session defined in config(mtproto.sessions)}';
 
     protected $description = 'Start the MTProto client and listen for updates (one or many sessions)';

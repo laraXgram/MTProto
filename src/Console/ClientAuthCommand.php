@@ -121,7 +121,7 @@ class ClientAuthCommand extends Command
             $this->components->info('✓ Bot login successful!');
             $this->components->warn(
                 'A bot auth key is tied to this bot. Do not run the same token via webhook Bot-API and '
-                .'MTProto at the same time — keep this session single-instance.'
+                .'MTProto at the same time - keep this session single-instance.'
             );
             return self::SUCCESS;
         } catch (\Throwable $e) {

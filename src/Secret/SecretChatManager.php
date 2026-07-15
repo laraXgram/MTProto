@@ -129,7 +129,7 @@ final class SecretChatManager
 
         $expected = $this->fingerprintInt($key);
         if ($expected !== (int) ($encryptedChat['key_fingerprint'] ?? 0)) {
-            throw new MTProtoException('Secret chat key fingerprint mismatch — aborting (possible MITM).');
+            throw new MTProtoException('Secret chat key fingerprint mismatch - aborting (possible MITM).');
         }
 
         $state['key'] = base64_encode($key);

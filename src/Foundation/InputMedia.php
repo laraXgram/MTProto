@@ -7,7 +7,7 @@ namespace LaraGram\MTProto\Foundation;
 final class InputMedia
 {
     /**
-     * inputMediaUploadedPhoto — a freshly uploaded photo.
+     * inputMediaUploadedPhoto - a freshly uploaded photo.
      *
      * @param array $file An `inputFile`/`inputFileBig` from FileUploader.
      */
@@ -26,7 +26,7 @@ final class InputMedia
     }
 
     /**
-     * inputMediaUploadedDocument — any uploaded file (document/video/audio/…).
+     * inputMediaUploadedDocument - any uploaded file (document/video/audio/…).
      *
      * @param array $file An `inputFile`/`inputFileBig`.
      * @param string $mimeType e.g. "image/png", "video/mp4".
@@ -67,7 +67,7 @@ final class InputMedia
     }
 
     /**
-     * inputMediaPhoto — resend an already-stored photo by reference (no upload).
+     * inputMediaPhoto - resend an already-stored photo by reference (no upload).
      *
      * @param int $id Photo id.
      * @param int $accessHash Photo access_hash.
@@ -91,7 +91,7 @@ final class InputMedia
     }
 
     /**
-     * inputMediaDocument — resend an already-stored document by reference.
+     * inputMediaDocument - resend an already-stored document by reference.
      */
     public static function document(int $id, int $accessHash, string $fileReference, ?int $ttlSeconds = null, bool $spoiler = false): array
     {

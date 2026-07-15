@@ -597,7 +597,7 @@ final class RPCHandler
         $errorMsg = $errorMessages[$errorCode] ?? "code {$errorCode}";
 
         if ($errorCode === 48) {
-            $this->logger?->warning("Bad message: {$errorMsg} — salt updated, will retry");
+            $this->logger?->warning("Bad message: {$errorMsg} - salt updated, will retry");
             return [
                 '_' => 'bad_server_salt',
                 'msg_id' => $badMsg['bad_msg_id'] ?? 0,
@@ -608,7 +608,7 @@ final class RPCHandler
         }
 
         if ($errorCode >= 32 && $errorCode <= 35) {
-            $this->logger?->warning("Bad message: {$errorMsg} — regenerating session");
+            $this->logger?->warning("Bad message: {$errorMsg} - regenerating session");
             $this->session->regenerateSessionId();
             $this->initialized = false;
         }

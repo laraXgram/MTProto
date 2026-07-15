@@ -354,7 +354,7 @@ trait ManagesChats
     {
         $resolver = $this->getResolver();
         if ($resolver === null) {
-            throw new MTProtoException('Peer resolver unavailable — no peer database is configured.');
+            throw new MTProtoException('Peer resolver unavailable - no peer database is configured.');
         }
 
         return $resolver;

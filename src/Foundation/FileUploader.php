@@ -10,7 +10,7 @@ use RuntimeException;
 
 final class FileUploader
 {
-    /** Part size — 512 KiB. Must evenly divide 1 MiB. */
+    /** Part size - 512 KiB. Must evenly divide 1 MiB. */
     public const PART_SIZE = 524288;
 
     /** Files larger than this go the "big file" route (no md5). */
@@ -137,7 +137,7 @@ final class FileUploader
     }
 
     /**
-     * Sequential upload — one part after another (sync RPC path / single part).
+     * Sequential upload - one part after another (sync RPC path / single part).
      */
     private function uploadPartsSerial(string $contents, int $fileId, int $totalParts, bool $isBig, ?callable $progress): void
     {

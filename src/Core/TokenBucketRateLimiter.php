@@ -34,7 +34,7 @@ final class TokenBucketRateLimiter implements RateLimiterInterface
         $rate     = $rate     ?? $this->defaultRate;
         $capacity = $capacity ?? $this->defaultCapacity;
 
-        // Disabled / unbounded bucket — never throttle.
+        // Disabled / unbounded bucket - never throttle.
         if ($rate <= 0.0 || $capacity <= 0.0) {
             return 0.0;
         }

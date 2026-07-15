@@ -129,7 +129,7 @@ class PeerResolver
             }
 
             throw new MTProtoException(
-                "Peer id {$peer} has no usable access_hash — the account must share a "
+                "Peer id {$peer} has no usable access_hash - the account must share a "
                 . "dialog/chat/contact with it, or resolve it once by @username first."
             );
         }
@@ -257,7 +257,7 @@ class PeerResolver
         }
 
         throw new MTProtoException(
-            "Invite hash {$hash} points to a chat this account has not joined — call joinChat() first."
+            "Invite hash {$hash} points to a chat this account has not joined - call joinChat() first."
         );
     }
 
@@ -327,7 +327,7 @@ class PeerResolver
                     if (is_array($user) && ($user['_'] ?? '') === 'user') {
                         if (empty($user['access_hash'])) {
                             $logger?->warning(
-                                "users.getUsers returned a min user for id {$id} (access_hash 0) — "
+                                "users.getUsers returned a min user for id {$id} (access_hash 0) - "
                                 . "not addressable by id until a shared dialog/contact is primed."
                             );
                         }

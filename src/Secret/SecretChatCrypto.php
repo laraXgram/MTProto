@@ -41,7 +41,7 @@ final class SecretChatCrypto
     /**
      * Encrypt a serialized body (a `decryptedMessageLayer` TL blob) for the wire.
      *
-     * @param int $x Direction constant (0 or 8) — see class docblock.
+     * @param int $x Direction constant (0 or 8) - see class docblock.
      */
     public function encrypt(string $key, string $body, int $x): string
     {

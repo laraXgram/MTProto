@@ -258,8 +258,8 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Download whatever media this update carries — photo, video, animation,
-     * document, voice, sticker, or story — no arguments needed. With `$path`
+     * Download whatever media this update carries - photo, video, animation,
+     * document, voice, sticker, or story - no arguments needed. With `$path`
      * it streams to disk and returns bytes written; otherwise returns the raw
      * bytes.
      *
@@ -273,7 +273,7 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * The message this update carries, as a plain array — regardless of whether
+     * The message this update carries, as a plain array - regardless of whether
      * property access has already wrapped it into a TLObject.
      */
     private function messageArray(): ?array
@@ -319,7 +319,7 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Mark this chat's history read up to the current message — i.e. put a
+     * Mark this chat's history read up to the current message - i.e. put a
      * "seen" tick on the user's message. Routes to channels/messages readHistory
      * as appropriate.
      */
@@ -334,7 +334,7 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Alias of {@see read()} — mark the user's message as seen.
+     * Alias of {@see read()} - mark the user's message as seen.
      */
     public function seen(): mixed
     {

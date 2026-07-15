@@ -8,7 +8,7 @@ namespace LaraGram\MTProto\Entities;
  * Markdown / HTML ↔ MTProto MessageEntity[].
  *
  * Entity offsets/lengths are measured in UTF-16 code units (Telegram convention,
- * identical to the Bot API), not bytes or PHP characters — a codepoint above the
+ * identical to the Bot API), not bytes or PHP characters - a codepoint above the
  * BMP counts as 2. Parsing returns the cleaned plain text plus the entity list
  * ready for messages.* (the `message` + `entities` fields).
  *
@@ -105,7 +105,7 @@ final class EntityParser
 
             $type = $this->htmlTagToType($name, $raw);
             if ($type === null) {
-                continue; // unknown tag — drop the markup, keep flow
+                continue; // unknown tag - drop the markup, keep flow
             }
 
             $stack[] = [
@@ -115,7 +115,7 @@ final class EntityParser
             ];
         }
 
-        // Any unclosed tags are discarded (no length) — emit what closed cleanly.
+        // Any unclosed tags are discarded (no length) - emit what closed cleanly.
         return ['text' => $out, 'entities' => $this->sortEntities($entities)];
     }
 

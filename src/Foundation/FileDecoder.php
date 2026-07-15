@@ -320,7 +320,7 @@ class FileDecoder
         }
 
         if (!isset($photo['id'], $photo['access_hash'])) {
-            throw new MTProtoException('Photo is missing id/access_hash — cannot build a download location (a "min" object needs re-resolving first).');
+            throw new MTProtoException('Photo is missing id/access_hash - cannot build a download location (a "min" object needs re-resolving first).');
         }
 
         return [
@@ -355,7 +355,7 @@ class FileDecoder
     protected function resolveDocumentDirectLocation(array $doc): ?array
     {
         if (!isset($doc['id'], $doc['access_hash'])) {
-            throw new MTProtoException('Document is missing id/access_hash — cannot build a download location (a "min" object needs re-resolving first).');
+            throw new MTProtoException('Document is missing id/access_hash - cannot build a download location (a "min" object needs re-resolving first).');
         }
 
         return [
@@ -397,7 +397,7 @@ class FileDecoder
                 $result = $this->fetchChunk($conn, $location, $offset, $limit);
             } elseif (str_contains($msg, 'FILE_REFERENCE_EXPIRED') || str_contains($msg, 'FILE_REFERENCE_INVALID')) {
                 throw new MTProtoException(
-                    'File reference expired — re-fetch the source message (getMessages) to obtain a fresh '
+                    'File reference expired - re-fetch the source message (getMessages) to obtain a fresh '
                     . 'file_reference, then download again.',
                     0,
                     $e,

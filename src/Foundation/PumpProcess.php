@@ -86,7 +86,7 @@ class PumpProcess
     }
 
     /**
-     * Resolve which sessions this process should run — authorized only.
+     * Resolve which sessions this process should run - authorized only.
      *
      * @return string[]
      */

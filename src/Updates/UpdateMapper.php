@@ -145,7 +145,7 @@ final class UpdateMapper
 
     /**
      * MessageMedia -> `['media_type' => ..., 'file_id' => ...]` (file_id only when a
-     * photo/document is present). Pure mapping — no fetch.
+     * photo/document is present). Pure mapping - no fetch.
      *
      * @param array<string, mixed> $media
      * @return array<string, mixed>
@@ -178,7 +178,7 @@ final class UpdateMapper
         try {
             $out['file_id'] = \LaraGram\MTProto\Foundation\FileId::fromMedia($media);
         } catch (\Throwable) {
-            // no photo/document in this media — type only
+            // no photo/document in this media - type only
         }
 
         return $out;

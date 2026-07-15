@@ -125,7 +125,7 @@ final class ReplyMarkup
             return ['_' => 'keyboardButtonBuy', 'text' => $text];
         }
 
-        // Fallback — a plain labelled button.
+        // Fallback - a plain labelled button.
         return ['_' => 'keyboardButton', 'text' => $text];
     }
 

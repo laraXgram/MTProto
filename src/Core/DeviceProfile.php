@@ -9,7 +9,7 @@ namespace LaraGram\MTProto\Core;
  *
  * Telegram fingerprints clients by the device/system/app strings sent at
  * connection init. The previous code derived these from `php_uname()` +
- * `app_version '1.0.0'`, which screams "a PHP server is logged in here" — an
+ * `app_version '1.0.0'`, which screams "a PHP server is logged in here" - an
  * obvious, high-signal anomaly and a ban risk (ROADMAP B1).
  *
  * This value object resolves a realistic, *stable* fingerprint from one of a
@@ -17,7 +17,7 @@ namespace LaraGram\MTProto\Core;
  * framework-agnostic (RULE 5): build it from a plain array, no container.
  *
  * Note on api_id (B6): the api_id is the user's own (from my.telegram.org) and
- * is NOT bundled here — pinning a single shared api_id across many accounts is
+ * is NOT bundled here - pinning a single shared api_id across many accounts is
  * itself a flag. Pick a preset whose platform matches the api_id you registered.
  */
 final class DeviceProfile
@@ -34,7 +34,7 @@ final class DeviceProfile
 
     /**
      * Official-client presets. Values mirror what the real clients send so the
-     * fingerprint blends in. Stable by construction (no randomisation — a
+     * fingerprint blends in. Stable by construction (no randomisation - a
      * rotating fingerprint is itself a flag).
      *
      * @var array<string, array<string, string>>

@@ -10,7 +10,7 @@ use LaraGram\MTProto\Crypto\NativeCrypto;
 
 /**
  * File-based session storage.
- * 
+ *
  * Stores session data in a local file using JSON serialization.
  * This is the default session driver - simple and requires no external dependencies.
  */
@@ -89,12 +89,12 @@ class FileSession implements SessionInterface
         $this->files = $files ?? new Filesystem();
         $this->crypto = new NativeCrypto();
         $this->filePath = $this->getFilePath($name);
-        
+
         // Try to load existing session
         if ($this->loadFromFile()) {
             return;
         }
-        
+
         // Generate new session ID for new sessions
         $this->sessionId = $this->crypto->randomBytes(8);
         $this->save();
@@ -158,7 +158,7 @@ class FileSession implements SessionInterface
 
         $content = json_encode($data, JSON_PRETTY_PRINT);
 
-        // The session file holds the auth key — secret material. replace() does an
+        // The session file holds the auth key - secret material. replace() does an
         // atomic temp-write + rename with the temp file chmod'd to 0600, so a crash
         // can't leave a torn file and the secret is never world-readable.
         try {
@@ -189,13 +189,13 @@ class FileSession implements SessionInterface
     public function destroy(): bool
     {
         $result = $this->delete();
-        
+
         // Reset in-memory state
         $this->authKey = null;
         $this->authKeyId = null;
         $this->serverSalt = null;
         $this->seqNoCounter = 0;
-        
+
         return $result;
     }
 
@@ -266,7 +266,7 @@ class FileSession implements SessionInterface
         $this->sessionId = $this->crypto->randomBytes(8);
         $this->seqNoCounter = 0;
         $this->save();
-        
+
         return $this->sessionId;
     }
 
@@ -276,12 +276,12 @@ class FileSession implements SessionInterface
     public function getSeqNo(bool $contentRelated = true): int
     {
         $seqNo = $this->seqNoCounter * 2;
-        
+
         if ($contentRelated) {
             $seqNo++;
             $this->seqNoCounter++;
         }
-        
+
         return $seqNo;
     }
 
@@ -326,7 +326,7 @@ class FileSession implements SessionInterface
     {
         // Sanitize session ID for use in filename
         $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $sessionId);
-        
+
         return $this->directory . '/' . $safeId . '.session';
     }
 
@@ -358,20 +358,20 @@ class FileSession implements SessionInterface
     public function generateMessageId(): int
     {
         $time = microtime(true) + $this->timeDelta;
-        
+
         // msg_id = (time * 2^32) with lower 2 bits for client messages = 00
         $msgId = (int) ($time * (1 << 32));
-        
+
         // Ensure lower 2 bits are 0 (client message)
         $msgId = ($msgId >> 2) << 2;
-        
+
         // Ensure uniqueness - if same as last, increment by 4 (keeping lower 2 bits = 00)
         if ($msgId <= $this->lastMsgId) {
             $msgId = $this->lastMsgId + 4;
         }
-        
+
         $this->lastMsgId = $msgId;
-        
+
         return $msgId;
     }
 }

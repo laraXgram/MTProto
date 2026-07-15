@@ -22,7 +22,7 @@ final class ObfuscatedConnection implements ConnectionInterface
     public const TAG_FULL         = "";
 
     /**
-     * First-4-byte prefixes that must never appear in the handshake — they
+     * First-4-byte prefixes that must never appear in the handshake - they
      * collide with HTTP/TLS/other transport markers and would be misread by the
      * server (or a middlebox) as a different protocol.
      */

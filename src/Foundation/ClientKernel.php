@@ -85,7 +85,7 @@ class ClientKernel
         try {
             $response = $this->sendRequestThroughListener($request);
         } catch (ListenNotFoundException $e) {
-            // Let this propagate — caller decides whether to ignore it
+            // Let this propagate - caller decides whether to ignore it
             throw $e;
         } catch (Throwable $e) {
             $this->reportException($e);
@@ -194,7 +194,7 @@ class ClientKernel
         try {
             $this->app[ExceptionHandler::class]->report($e);
         } catch (Throwable) {
-            // ExceptionHandler not bound — try Log facade
+            // ExceptionHandler not bound - try Log facade
             try {
                 \LaraGram\Support\Facades\Log::error("[ClientKernel] {$e->getMessage()}", [
                     'exception' => $e,

@@ -75,7 +75,7 @@ class ClientListener extends Listener
     }
 
     /**
-     * Register a listen — but ONLY when inside a Client group context.
+     * Register a listen - but ONLY when inside a Client group context.
      *
      * @param array|string $methods
      * @param string $pattern
