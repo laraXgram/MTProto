@@ -44,6 +44,18 @@ $SCHEMAS    = ['telegram_api.tl'];
 
 $NAMESPACE_BASE = 'LaraGram\\MTProto\\Generated';
 
+$FLAT_OVERRIDES = [
+    'sendMessage' => 'messages',
+    'deleteMessages' => 'messages',
+    'readHistory' => 'messages',
+    'getMessages' => 'messages',
+    'reportSpam' => 'messages',
+    'readMessageContents' => 'messages',
+    'deleteHistory' => 'messages',
+    'search' => 'messages',
+    'editMessage' => 'messages',
+];
+
 //  Smart defaults - params that are technically "required" in TL schema
 //  but have obvious sensible defaults. These become optional in PHP.
 //  Format: paramName => [ tlType => phpDefaultLiteral ]
@@ -738,6 +750,29 @@ foreach ($methodsByNs as $ns => $nsMethods) {
 $buf .= "\ntrait ClientMethods\n";
 $buf .= "{\n";
 
+// Namespace name registry — used by callers (e.g. ClientRequest) that need to
+// tell a namespace access apart from an update-payload key without a client.
+$buf .= "    /** @var list<string> All API namespace names. */\n";
+$buf .= "    public const NAMESPACES = [\n";
+foreach ($methodsByNs as $ns => $nsMethods) {
+    $buf .= "        '{$ns}',\n";
+}
+$buf .= "    ];\n\n";
+$buf .= "    /**\n";
+$buf .= "     * All API namespace names ('messages', 'users', 'ephemeral', …).\n";
+$buf .= "     */\n";
+$buf .= "    public static function namespaceNames(): array\n";
+$buf .= "    {\n";
+$buf .= "        return self::NAMESPACES;\n";
+$buf .= "    }\n\n";
+$buf .= "    /**\n";
+$buf .= "     * Whether \$name is one of the API namespaces.\n";
+$buf .= "     */\n";
+$buf .= "    public static function isNamespace(string \$name): bool\n";
+$buf .= "    {\n";
+$buf .= "        return \\in_array(\$name, self::NAMESPACES, true);\n";
+$buf .= "    }\n\n";
+
 // Namespace instances cache
 $buf .= "    /** @var array<string, object> */\n";
 $buf .= "    private array \$__namespaces = [];\n\n";
@@ -769,12 +804,44 @@ $buf .= "        throw new \\BadMethodCallException(\"Unknown namespace: {\$name
 $buf .= "    }\n\n";
 
 // __call for flat method access: $client->sendMessage() → $client->messages->sendMessage()
-// Build a lookup map: methodName => namespace (use the first match)
+// Build a lookup map: methodName => namespace.
+//  - Default winner is the first match (alphabetical namespace order).
+//  - $FLAT_OVERRIDES forces a specific namespace to win for a given method.
+// Collect, per method name, the set of namespaces that define it, so overrides
+// can be validated and collisions reported.
+$methodNsCandidates = []; // methodName => [ns => true]
+foreach ($allMethodsFlat as $fullTL => $info) {
+    $methodNsCandidates[$info['name']][$info['ns']] = true;
+}
+
 $methodToNs = [];
 foreach ($allMethodsFlat as $fullTL => $info) {
     $mName = $info['name'];
     if (!isset($methodToNs[$mName])) {
-        $methodToNs[$mName] = $info['ns'];
+        $methodToNs[$mName] = $info['ns']; // first-match default
+    }
+}
+
+// Apply manual overrides on top of the defaults.
+foreach ($FLAT_OVERRIDES as $mName => $ns) {
+    if (!isset($methodNsCandidates[$mName])) {
+        echo "  ⚠️  FLAT_OVERRIDES: method '{$mName}' does not exist in any namespace — ignored\n";
+        continue;
+    }
+    if (!isset($methodNsCandidates[$mName][$ns])) {
+        $have = implode(', ', array_keys($methodNsCandidates[$mName]));
+        echo "  ⚠️  FLAT_OVERRIDES: namespace '{$ns}' has no '{$mName}' (available: {$have}) — ignored\n";
+        continue;
+    }
+    $methodToNs[$mName] = $ns;
+}
+
+// Report remaining collisions (methods in >1 namespace) and their flat winner.
+foreach ($methodNsCandidates as $mName => $nsSet) {
+    if (count($nsSet) > 1) {
+        $winner = $methodToNs[$mName];
+        $losers = implode(', ', array_keys(array_diff_key($nsSet, [$winner => true])));
+        echo "  ℹ️  Flat collision '{$mName}': winner={$winner}, shadowed={$losers}\n";
     }
 }
 
