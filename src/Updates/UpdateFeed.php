@@ -824,6 +824,13 @@ class UpdateFeed
             // ── Themes ─────────────────────────────────────────────────
             'updateTheme' => $this->dispatchEvent('theme', $wrapped),
 
+            // ── Ephemeral messages & bot stars subscription ──
+            'updateNewEphemeralMessage' => $this->dispatchEvent('ephemeralMessage', $wrapped),
+            'updateEditEphemeralMessage' => $this->dispatchEvent('editedEphemeralMessage', $wrapped),
+            'updateDeleteEphemeralMessages' => $this->dispatchEvent('deletedEphemeralMessages', $wrapped),
+            'updateEphemeralBotCallbackQuery' => $this->dispatchEvent('ephemeralCallbackQuery', $wrapped),
+            'updateBotStarsSubscription' => $this->dispatchEvent('botStarsSubscription', $wrapped),
+
             default => null,
         };
 

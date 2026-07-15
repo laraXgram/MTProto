@@ -21,7 +21,7 @@ use LaraGram\Support\Traits\Macroable;
  * @property-read int|null $pts_count                      PTS count delta
  * @property-read int|null $id                             Generic ID field
  * @property-read int|null $random_id                      Random ID
- * @property-read int[]|null $messages                     Array of message IDs (updateDeleteMessages)
+ * @property-read \LaraGram\MTProto\Generated\Methods\Messages|int[]|null $messages  `messages` namespace (method call) OR message IDs (updateDeleteMessages payload)
  * @property-read int|null $user_id                        User ID
  * @property-read Types\SendMessageAction|null $action     Typing action (updateUserTyping)
  * @property-read int|null $chat_id                        Chat ID
@@ -33,7 +33,7 @@ use LaraGram\Support\Traits\Macroable;
  * @property-read string|null $first_name                  First name (updateUserName)
  * @property-read string|null $last_name                   Last name (updateUserName)
  * @property-read Types\Username[]|null $usernames         Usernames (updateUserName)
- * @property-read string|null $phone                       Phone number (updateUserPhone)
+ * @property-read \LaraGram\MTProto\Generated\Methods\Phone|string|null $phone  `phone` namespace (method call) OR phone number (updateUserPhone payload)
  * @property-read int|null $date                           Date timestamp
  * @property-read Types\MessageMedia|null $media           Media (updateServiceNotification)
  * @property-read Types\MessageEntity[]|null $entities     Entities
@@ -293,7 +293,7 @@ class ClientRequest implements ProvidesListenContext
     {
         $id = $this->messageArray()['id'] ?? $this->data['id'] ?? null;
 
-        return $id !== null ? (int) $id : null;
+        return $id !== null ? (int)$id : null;
     }
 
     /**
@@ -315,7 +315,7 @@ class ClientRequest implements ProvidesListenContext
 
         $id = $peer['user_id'] ?? $peer['channel_id'] ?? $peer['chat_id'] ?? null;
 
-        return $id !== null ? (int) $id : null;
+        return $id !== null ? (int)$id : null;
     }
 
     /**
@@ -465,7 +465,7 @@ class ClientRequest implements ProvidesListenContext
      */
     public function dispatchDone(): bool
     {
-        return (bool) ($this->dispatchState->done ?? false);
+        return (bool)($this->dispatchState->done ?? false);
     }
 
     /**
@@ -561,7 +561,8 @@ class ClientRequest implements ProvidesListenContext
             'updateShortSentMessage' => true,
             'updateShortMessage', 'updateShortChatMessage' => !empty($this->data['out']),
             'updateNewMessage', 'updateNewChannelMessage',
-            'updateEditMessage', 'updateEditChannelMessage' => !empty($this->data['message']['out']),
+            'updateEditMessage', 'updateEditChannelMessage',
+            'updateNewEphemeralMessage', 'updateEditEphemeralMessage' => !empty($this->data['message']['out']),
             default => false,
         };
     }
@@ -640,10 +641,39 @@ class ClientRequest implements ProvidesListenContext
      */
     public function __get(string $name): mixed
     {
-        if (!array_key_exists($name, $this->data)) {
+        $isNamespace = Client::isNamespace($name);
+        $hasData = array_key_exists($name, $this->data);
+
+        // Name is an API namespace only (no colliding update key) → the
+        // namespace object, so `$request->messages->sendMessage(...)` works.
+        if ($isNamespace && !$hasData) {
+            return $this->client()->{$name};
+        }
+
+        // Name is BOTH a namespace and an update-payload key → defer the
+        // meaning to how the caller uses it (method the namespace defines →
+        // namespace; property/array/iteration/other method → update value).
+        if ($isNamespace && $hasData) {
+            return new PendingNamespaceOrUpdate(
+                fn() => $this->client()->{$name},
+                fn() => $this->wrapDataValue($name),
+            );
+        }
+
+        // Pure update payload.
+        if (!$hasData) {
             return null;
         }
 
+        return $this->wrapDataValue($name);
+    }
+
+    /**
+     * Wrap a raw update-data value into TLObject(s) where it carries a `_`
+     * constructor, caching the result. Scalars and plain arrays pass through.
+     */
+    private function wrapDataValue(string $name): mixed
+    {
         $value = $this->data[$name];
 
         if (is_array($value)) {

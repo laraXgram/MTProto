@@ -721,6 +721,31 @@ trait ClientHandlerTrait
         return $this->addListen('UPDATE', 'web_browser_settings', $action);
     }
 
+    public function onEphemeralMessage(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'new_ephemeral_message', $action);
+    }
+
+    public function onEditEphemeralMessage(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'edited_ephemeral_message', $action);
+    }
+
+    public function onDeleteEphemeralMessages(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'deleted_ephemeral_messages', $action);
+    }
+
+    public function onEphemeralCallbackQuery(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'ephemeral_callback', $action);
+    }
+
+    public function onBotStarsSubscription(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'bot_stars_subscription', $action);
+    }
+
     public function onUpdate(Closure|array|string $action)
     {
         return $this->addListen('UPDATE', '*', $action)->fallback();

@@ -32,7 +32,8 @@ final class UpdateMapper
             'updateEditMessage', 'updateEditChannelMessage'
             => $this->wrapMessage($update['message'] ?? [], edited: true),
 
-            'updateBotCallbackQuery', 'updateInlineBotCallbackQuery'
+            'updateBotCallbackQuery', 'updateInlineBotCallbackQuery',
+            'updateEphemeralBotCallbackQuery'
             => ['callback_query' => $this->mapCallbackQuery($update)],
             'updateBotInlineQuery' => ['inline_query' => $this->mapInlineQuery($update)],
             'updateBotInlineSend' => ['chosen_inline_result' => $this->mapChosenInline($update)],

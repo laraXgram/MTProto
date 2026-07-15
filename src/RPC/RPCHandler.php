@@ -39,7 +39,7 @@ final class RPCHandler
     private array $pendingAcks = [];
 
     /** @var int Current layer (overridden by Client::LAYER; must match parsed schema/types) */
-    private int $layer = 214;
+    private int $layer = 228;
 
     /** @var bool Whether connection has been initialized */
     private bool $initialized = false;

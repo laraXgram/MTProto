@@ -203,6 +203,12 @@ enum ClientType: string
         'updateWebBrowserSettings' => 'web_browser_settings',
 
         'updateTheme' => 'theme',
+
+        'updateNewEphemeralMessage' => 'new_ephemeral_message',
+        'updateEditEphemeralMessage' => 'edited_ephemeral_message',
+        'updateDeleteEphemeralMessages' => 'deleted_ephemeral_messages',
+        'updateEphemeralBotCallbackQuery' => 'ephemeral_callback',
+        'updateBotStarsSubscription' => 'bot_stars_subscription',
     ];
 
     const MESSAGE_CONSTRUCTORS = [
@@ -213,12 +219,15 @@ enum ClientType: string
         'updateNewScheduledMessage',
         'updateBotNewBusinessMessage',
         'updateBotEditBusinessMessage',
+        'updateNewEphemeralMessage',
+        'updateEditEphemeralMessage',
     ];
 
     const CALLBACK_CONSTRUCTORS = [
         'updateBotCallbackQuery',
         'updateInlineBotCallbackQuery',
         'updateBusinessBotCallbackQuery',
+        'updateEphemeralBotCallbackQuery',
     ];
 
     const MEDIA_TYPES = [

@@ -265,4 +265,48 @@ trait MessagingExtras
             'id' => is_array($ids) ? $ids : [$ids],
         ]);
     }
+
+    /**
+     * Compose or rewrite a rich message with AI (proofread / emojify / translate).
+     *
+     * `$text` is an `InputRichMessage` array (e.g. `inputRichMessageMarkdown`);
+     * `$tone` is an `InputAiComposeTone` array (slug, id, or single-use prompt).
+     *
+     * @param array<string, mixed> $params Extra flags: proofread, emojify,
+     *        translate_to_lang, tone.
+     */
+    public function composeRichMessageWithAI(array $text, array $params = []): mixed
+    {
+        return $this->invoke('messages.composeRichMessageWithAI', array_merge([
+            'text' => $text,
+        ], $params));
+    }
+
+    /**
+     * Translate a rich message (or a peer's existing message ids) to `$toLang`.
+     *
+     * Provide either `$params['text']` (a list of `InputRichMessage`) or
+     * `$params['peer']` + `$params['id']` (message ids). Optional `$params['tone']`.
+     *
+     * @param array<string, mixed> $params
+     */
+    public function translateRichMessage(string $toLang, array $params = []): mixed
+    {
+        return $this->invoke('messages.translateRichMessage', array_merge([
+            'to_lang' => $toLang,
+        ], $params));
+    }
+
+    /**
+     * Request the WebView used to join a chat.
+     *
+     * @param array<string, mixed> $params Optional: theme_params.
+     */
+    public function requestChatJoinWebView(int $queryId, string $platform, array $params = []): mixed
+    {
+        return $this->invoke('messages.requestChatJoinWebView', array_merge([
+            'query_id' => $queryId,
+            'platform' => $platform,
+        ], $params));
+    }
 }

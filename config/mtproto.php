@@ -306,12 +306,12 @@ return [
     |--------------------------------------------------------------------------
     |
     | Telegram API layer version. MUST match the compiled TL schema + Generated
-    | types (currently 227). Do not raise this without regenerating both the
+    | types (currently 228). Do not raise this without regenerating both the
     | .tl schema and the Generated/Types together (php bin/compile-tl.php) — the
     | server would otherwise reply with constructors the deserializer cannot parse.
     |
     */
-    'layer' => 227,
+    'layer' => 228,
 
     /*
     |--------------------------------------------------------------------------

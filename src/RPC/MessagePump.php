@@ -64,7 +64,7 @@ final class MessagePump
 
     private int $apiId;
     private string $apiHash;
-    private int $layer = 214;
+    private int $layer = 228;
 
     /** Device fingerprint sent at connection init. Defaults to a realistic preset. */
     private ?DeviceProfile $deviceProfile = null;
