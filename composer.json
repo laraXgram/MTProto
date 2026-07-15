@@ -20,7 +20,8 @@
         "ext-mbstring": "*",
         "ext-openssl": "*",
         "ext-sockets": "*",
-        "ext-zlib": "*"
+        "ext-zlib": "*",
+        "laraxgram/surge": "^1"
     },
     "suggest": {
         "ext-swoole": "For non-blocking coroutine I/O. (SwooleDriver / Surge)",
