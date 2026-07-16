@@ -52,10 +52,9 @@
             "@php bin/compile-tl.php"
         ],
         "post-install-cmd": [
-            "@php bin/compile-tl.php"
-        ],
-        "post-root-package-install": [
-            "@php laragram install:client"
+            "@php bin/compile-tl.php",
+            "@php laragram install:client",
+            "@php laragram vendor:publish --tag=mtproto-config"
         ],
         "compile-tl": [
             "@php bin/compile-tl.php"
