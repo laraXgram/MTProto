@@ -44,12 +44,17 @@
             ]
         }
     },
+    "bin": [
+        "bin/compile-tl.php"
+    ],
     "scripts": {
         "post-update-cmd": [
             "@php bin/compile-tl.php"
         ],
+        "post-install-cmd": [
+            "@php bin/compile-tl.php"
+        ],
         "post-root-package-install": [
-            "@php bin/compile-tl.php",
             "@php laragram install:client"
         ],
         "compile-tl": [
