@@ -9,13 +9,13 @@ use LaraGram\MTProto\Exceptions\CryptoException;
 
 /**
  * Native PHP cryptography implementation using OpenSSL.
- * 
+ *
  * Uses PHP's built-in openssl extension for:
  * - AES-256-IGE encryption/decryption (IGE implemented manually using CBC primitives)
  * - AES-256-CTR encryption/decryption
  * - SHA-1 and SHA-256 hashing
  * - RSA encryption
- * 
+ *
  * This is the default crypto implementation - secure and fast with native extensions.
  */
 class NativeCrypto implements CryptoInterface
@@ -47,38 +47,29 @@ class NativeCrypto implements CryptoInterface
     {
         $this->validateAesParams($data, $key, $iv, true);
 
-        // iv_part_1 = first 16 bytes, iv_part_2 = last 16 bytes
-        $ivPart1 = substr($iv, 0, self::AES_BLOCK_SIZE);
-        $ivPart2 = substr($iv, self::AES_BLOCK_SIZE, self::AES_BLOCK_SIZE);
+        // With c_i = E(p_i ^ c_{i-1}) ^ p_{i-1} and d_i := c_i ^ p_{i-1},
+        // the recurrence becomes d_i = E((p_i ^ p_{i-2}) ^ d_{i-1}) - exactly
+        // CBC over the shift-2-XORed plaintext - and c is recovered by XORing
+        // d with the shift-1 plaintext. (p_0 = iv2, c_0 = iv1.)
+        $len = strlen($data);
+        $iv1 = substr($iv, 0, self::AES_BLOCK_SIZE);
+        $iv2 = substr($iv, self::AES_BLOCK_SIZE, self::AES_BLOCK_SIZE);
 
-        $result = '';
-        $dataLen = strlen($data);
+        $shift2 = str_repeat("\0", self::AES_BLOCK_SIZE) . $iv2 . substr($data, 0, max(0, $len - 2 * self::AES_BLOCK_SIZE));
 
-        for ($i = 0; $i < $dataLen; $i += self::AES_BLOCK_SIZE) {
-            $plain = substr($data, $i, self::AES_BLOCK_SIZE);
-            
-            // cipher = AES_encrypt(plain XOR iv_part_1) XOR iv_part_2
-            $cipher = openssl_encrypt(
-                $plain ^ $ivPart1,
-                'aes-256-ecb',
-                $key,
-                OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING
-            );
-            
-            if ($cipher === false) {
-                throw CryptoException::encryptionFailed(openssl_error_string() ?: 'Unknown error');
-            }
-            
-            $cipher = $cipher ^ $ivPart2;
-            
-            $result .= $cipher;
-            
-            // Update IVs for next block
-            $ivPart1 = $cipher;
-            $ivPart2 = $plain;
+        $cbc = openssl_encrypt(
+            $data ^ $shift2,
+            'aes-256-cbc',
+            $key,
+            OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING,
+            $iv1,
+        );
+
+        if ($cbc === false) {
+            throw CryptoException::encryptionFailed(openssl_error_string() ?: 'Unknown error');
         }
 
-        return $result;
+        return $cbc ^ ($iv2 . substr($data, 0, max(0, $len - self::AES_BLOCK_SIZE)));
     }
 
     /**
@@ -97,7 +88,7 @@ class NativeCrypto implements CryptoInterface
 
         for ($i = 0; $i < $dataLen; $i += self::AES_BLOCK_SIZE) {
             $cipher = substr($data, $i, self::AES_BLOCK_SIZE);
-            
+
             // plain = AES_decrypt(cipher XOR iv_part_2) XOR iv_part_1
             $plain = openssl_decrypt(
                 $cipher ^ $ivPart2,
@@ -105,15 +96,15 @@ class NativeCrypto implements CryptoInterface
                 $key,
                 OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING
             );
-            
+
             if ($plain === false) {
                 throw CryptoException::decryptionFailed(openssl_error_string() ?: 'Unknown error');
             }
-            
+
             $plain = $plain ^ $ivPart1;
-            
+
             $result .= $plain;
-            
+
             // Update IVs for next block
             $ivPart1 = $cipher;
             $ivPart2 = $plain;
@@ -184,7 +175,7 @@ class NativeCrypto implements CryptoInterface
 
     /**
      * {@inheritdoc}
-     * 
+     *
      * @param string $data Data to encrypt
      * @param string $publicKey PEM format or hex modulus
      * @param string|null $exponent Optional hex exponent (only used with hex modulus)
@@ -211,11 +202,11 @@ class NativeCrypto implements CryptoInterface
             // Convert hex to binary
             $modulus = hex2bin($publicKey);
             $exp = hexdec($exponent);
-            
+
             if ($modulus === false) {
                 throw CryptoException::encryptionFailed('Invalid hex modulus');
             }
-            
+
             return $this->rsaEncryptWithModulus($data, $modulus, $exp);
         }
 
@@ -235,28 +226,28 @@ class NativeCrypto implements CryptoInterface
         // Pad data with SHA-1 hash and random bytes to 255 bytes
         // data_with_hash = SHA1(data) + data + random_padding
         // Then prepend 0x00 to make it 256 bytes
-        
+
         $dataWithHash = $this->sha1($data) . $data;
         $paddingLength = 255 - strlen($dataWithHash);
-        
+
         if ($paddingLength < 0) {
             throw CryptoException::encryptionFailed('Data too long for RSA encryption');
         }
-        
+
         $dataWithHash .= $this->randomBytes($paddingLength);
         $paddedData = "\x00" . $dataWithHash;
-        
+
         // Convert to GMP numbers
         $m = gmp_import($paddedData, 1, GMP_MSW_FIRST | GMP_BIG_ENDIAN);
         $n = gmp_import($modulus, 1, GMP_MSW_FIRST | GMP_BIG_ENDIAN);
         $e = gmp_init($exponent);
-        
+
         // Modular exponentiation: c = m^e mod n
         $c = gmp_powm($m, $e, $n);
-        
+
         // Convert back to binary (256 bytes)
         $result = gmp_export($c, 1, GMP_MSW_FIRST | GMP_BIG_ENDIAN);
-        
+
         // Pad to 256 bytes if needed
         return str_pad($result, 256, "\x00", STR_PAD_LEFT);
     }
@@ -280,15 +271,15 @@ class NativeCrypto implements CryptoInterface
     {
         // MTProto 2.0 key derivation
         // https://core.telegram.org/mtproto/description#defining-aes-key-and-initialization-vector
-        
+
         $x = $outgoing ? 0 : 8;
-        
+
         $sha256a = $this->sha256($msgKey . substr($authKey, $x, 36));
         $sha256b = $this->sha256(substr($authKey, 40 + $x, 36) . $msgKey);
-        
+
         $aesKey = substr($sha256a, 0, 8) . substr($sha256b, 8, 16) . substr($sha256a, 24, 8);
         $aesIv = substr($sha256b, 0, 8) . substr($sha256a, 8, 16) . substr($sha256b, 24, 8);
-        
+
         return [
             'aes_key' => $aesKey,
             'aes_iv' => $aesIv,
@@ -309,10 +300,10 @@ class NativeCrypto implements CryptoInterface
     public function calculateMsgKey(string $authKey, string $plaintext, bool $outgoing): string
     {
         $x = $outgoing ? 0 : 8;
-        
+
         // msg_key = middle 128 bits of SHA256(substr(auth_key, 88+x, 32) + plaintext)
         $hash = $this->sha256(substr($authKey, 88 + $x, 32) . $plaintext);
-        
+
         return substr($hash, 8, 16);
     }
 
@@ -325,7 +316,7 @@ class NativeCrypto implements CryptoInterface
      * @param bool $isIge True for IGE mode (32-byte IV), false for CTR (16-byte IV)
      * @throws CryptoException
      */
-    private function validateAesParams(string $data, string $key, string $iv, bool $isIge): void
+    protected function validateAesParams(string $data, string $key, string $iv, bool $isIge): void
     {
         if (strlen($key) !== self::AES_KEY_SIZE) {
             throw CryptoException::invalidKeySize(self::AES_KEY_SIZE, strlen($key));

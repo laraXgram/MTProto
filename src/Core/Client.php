@@ -178,7 +178,9 @@ class Client
         $this->runtime = $options['runtime'] ?? null;
 
         $this->transport = $options['transport'] ?? new AbridgedTransport();
-        $this->crypto = $options['crypto'] ?? new NativeCrypto();
+        $this->crypto = $options['crypto'] ?? (\LaraGram\MTProto\Crypto\FfiIgeCrypto::isSupported()
+            ? new \LaraGram\MTProto\Crypto\FfiIgeCrypto()
+            : new NativeCrypto());
         $this->obfuscated = (bool)($options['obfuscated'] ?? false);
         $this->protocolTag = (string)($options['protocol_tag'] ?? ObfuscatedConnection::TAG_ABRIDGED);
         $this->proxy = ($options['proxy'] ?? null) instanceof ProxySettings ? $options['proxy'] : null;

@@ -169,8 +169,10 @@ final class FileUploader
         $runtime = $this->client->getRuntime();
 
         // Spread parts over several media sockets to the home DC.
+        // Socket count comes from config (transfer.media_sockets); the in-flight
+        // window ($this->concurrency) is independent - depth >1 per socket hides RTT.
         try {
-            $conns = $this->client->mediaSockets($this->client->getDcId(), $this->concurrency);
+            $conns = $this->client->mediaSockets($this->client->getDcId());
         } catch (\Throwable $e) {
             $this->client->getLogger()?->debug("media sockets unavailable for upload, using single connection: {$e->getMessage()}");
             $conns = [$this->client];

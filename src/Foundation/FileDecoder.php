@@ -11,10 +11,12 @@ use LaraGram\MTProto\TL\TLObject;
 class FileDecoder
 {
     /**
-     * Default chunk size for downloads (512 KB).
-     * Must be divisible by 4096 and <= 1MB (1048576).
+     * Default chunk size for downloads (1 MB - Telegram's maximum).
+     * Must be divisible by 4096, <= 1MB (1048576), and offsets stay
+     * chunk-aligned so a request never crosses a 1MB file boundary
+     * (required with the `precise` flag).
      */
-    protected const CHUNK_SIZE = 524288; // 512 * 1024
+    protected const CHUNK_SIZE = 1048576; // 1024 * 1024
 
     /**
      * Maximum chunk size (1 MB, Telegram's limit).
@@ -456,8 +458,10 @@ class FileDecoder
         $total = (int) ceil($size / $chunkSize);
         $concurrency = min($this->concurrency, $total);
 
+        // Socket count comes from config (transfer.media_sockets); the in-flight
+        // window ($concurrency) is independent - depth >1 per socket hides RTT.
         try {
-            $conns = $this->client->mediaSockets($dcId, $concurrency);
+            $conns = $this->client->mediaSockets($dcId);
         } catch (\Throwable $e) {
             $this->client->getLogger()?->debug("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
             $conns = [$this->client->pool()->connection($dcId)];
