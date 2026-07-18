@@ -71,7 +71,7 @@ class Client
     use ManagesCommunities;
     use HandlesEphemeral;
 
-    public const VERSION = '0.1.3';
+    public const VERSION = '0.2.0';
     public const LAYER = 228;
 
     private ConnectionInterface $connection;
