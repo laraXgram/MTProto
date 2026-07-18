@@ -116,19 +116,29 @@ final class FileUploader
     }
 
     /**
-     * Upload one part. Shared by the serial and parallel paths.
+     * Upload one part over the home connection. Serial path / single part.
      */
     private function uploadPart(string $chunk, int $fileId, int $part, int $totalParts, bool $isBig): void
     {
+        $this->uploadPartOn($this->client, $chunk, $fileId, $part, $totalParts, $isBig);
+    }
+
+    /**
+     * Upload one part over an explicit connection (home or a media socket).
+     * Parts are keyed by file_id, so the server assembles them regardless of
+     * which same-DC socket each arrived on.
+     */
+    private function uploadPartOn(Client $conn, string $chunk, int $fileId, int $part, int $totalParts, bool $isBig): void
+    {
         if ($isBig) {
-            $this->client->invoke('upload.saveBigFilePart', [
+            $conn->invoke('upload.saveBigFilePart', [
                 'file_id' => $fileId,
                 'file_part' => $part,
                 'file_total_parts' => $totalParts,
                 'bytes' => $chunk,
             ]);
         } else {
-            $this->client->invoke('upload.saveFilePart', [
+            $conn->invoke('upload.saveFilePart', [
                 'file_id' => $fileId,
                 'file_part' => $part,
                 'bytes' => $chunk,
@@ -157,18 +167,29 @@ final class FileUploader
     private function uploadParts(string $contents, int $fileId, int $totalParts, bool $isBig, ?callable $progress): void
     {
         $runtime = $this->client->getRuntime();
+
+        // Spread parts over several media sockets to the home DC.
+        try {
+            $conns = $this->client->mediaSockets($this->client->getDcId(), $this->concurrency);
+        } catch (\Throwable $e) {
+            $this->client->getLogger()?->debug("media sockets unavailable for upload, using single connection: {$e->getMessage()}");
+            $conns = [$this->client];
+        }
+        $socketCount = count($conns);
+
         $tokens = $runtime->channel($this->concurrency);
         $done = $runtime->channel($totalParts);
         $errors = [];
 
-        $runtime->run(function () use ($runtime, $contents, $fileId, $totalParts, $isBig, $tokens, $done, &$errors) {
+        $runtime->run(function () use ($runtime, $contents, $fileId, $totalParts, $isBig, $tokens, $done, &$errors, $conns, $socketCount) {
             for ($part = 0; $part < $totalParts; $part++) {
                 $tokens->push(true);
                 $chunk = substr($contents, $part * self::PART_SIZE, self::PART_SIZE);
+                $conn = $conns[$part % $socketCount];
 
-                $runtime->spawn(function () use ($chunk, $fileId, $part, $totalParts, $isBig, $tokens, $done, &$errors) {
+                $runtime->spawn(function () use ($conn, $chunk, $fileId, $part, $totalParts, $isBig, $tokens, $done, &$errors) {
                     try {
-                        $this->uploadPart($chunk, $fileId, $part, $totalParts, $isBig);
+                        $this->uploadPartOn($conn, $chunk, $fileId, $part, $totalParts, $isBig);
                     } catch (\Throwable $e) {
                         $errors[$part] = $e;
                     } finally {

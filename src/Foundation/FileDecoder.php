@@ -21,13 +21,35 @@ class FileDecoder
      */
     protected const MAX_CHUNK_SIZE = 1048576; // 1024 * 1024
 
+    /** Default number of concurrent chunk fetches on the parallel path. */
+    public const DEFAULT_CONCURRENCY = 4;
+
     protected Client $client;
     protected \LaraGram\Filesystem\Filesystem $files;
+
+    /**
+     * Max concurrent chunk fetches. 1 = serial (default, preserves the legacy
+     * behaviour). Raise via {@see withConcurrency()} to parallelise downloads.
+     */
+    private int $concurrency = 1;
 
     public function __construct(Client $client)
     {
         $this->client = $client;
         $this->files = $client->getFiles();
+    }
+
+    /**
+     * Set how many chunks are fetched concurrently. The parallel path only
+     * engages when the size is known, the runtime is coroutine-capable, and the
+     * target DC connection supports concurrent invokes (pump running); otherwise
+     * it transparently falls back to the serial loop.
+     */
+    public function withConcurrency(int $n): self
+    {
+        $this->concurrency = max(1, $n);
+
+        return $this;
     }
 
     /**
@@ -114,6 +136,18 @@ class FileDecoder
      */
     public function downloadToMemory(array $location, int $dcId, int $size = 0): string
     {
+        if ($this->canParallelize($dcId, $size)) {
+            $chunks = [];
+            $this->downloadChunksInOrder($location, $dcId, $size, static function (int $index, string $bytes) use (&$chunks): void {
+                $chunks[$index] = $bytes;
+            });
+            ksort($chunks);
+
+            $content = implode('', $chunks);
+
+            return ($size > 0 && strlen($content) > $size) ? substr($content, 0, $size) : $content;
+        }
+
         $chunks = [];
         $offset = 0;
         $chunkSize = self::CHUNK_SIZE;
@@ -170,6 +204,20 @@ class FileDecoder
         $handle = fopen($path, 'wb');
         if ($handle === false) {
             throw new MTProtoException("Cannot open file for writing: {$path}");
+        }
+
+        if ($this->canParallelize($dcId, $size)) {
+            try {
+                // A single consumer coroutine owns the handle, so ordered
+                // writes never race even though fetches run concurrently.
+                return $this->downloadChunksInOrder($location, $dcId, $size, static function (int $index, string $bytes) use ($handle, $path): void {
+                    if (fwrite($handle, $bytes) === false) {
+                        throw new MTProtoException("Failed to write to file: {$path}");
+                    }
+                });
+            } finally {
+                fclose($handle);
+            }
         }
 
         try {
@@ -372,6 +420,121 @@ class FileDecoder
     }
 
     /**
+     * Whether the parallel download path is eligible for this transfer:
+     * concurrency asked for, size known (needed to compute chunk offsets),
+     * a coroutine runtime, and a DC connection that can invoke concurrently
+     * (pump running). Any miss falls back to the serial loop.
+     */
+    private function canParallelize(int $dcId, int $size): bool
+    {
+        if ($this->concurrency < 2 || $size <= self::CHUNK_SIZE) {
+            return false;
+        }
+
+        if (!$this->client->getRuntime()->isSupported()) {
+            return false;
+        }
+
+        return $this->client->pool()->connection($dcId)->supportsConcurrentInvoke();
+    }
+
+    /**
+     * Fetch every chunk of a known-size file concurrently (bounded by
+     * {@see $concurrency}) and hand them to $sink IN ORDER (0,1,2,…). A dedicated
+     * producer coroutine keeps at most $concurrency fetches in flight; this
+     * (consumer) coroutine reorders out-of-order arrivals and emits contiguous
+     * chunks, so $sink is always called sequentially and may safely own a file
+     * handle. Returns total bytes emitted.
+     *
+     * @param callable(int $index, string $bytes): void $sink
+     * @throws MTProtoException
+     */
+    private function downloadChunksInOrder(array $location, int $dcId, int $size, callable $sink): int
+    {
+        $runtime = $this->client->getRuntime();
+        $chunkSize = self::CHUNK_SIZE;
+        $total = (int) ceil($size / $chunkSize);
+        $concurrency = min($this->concurrency, $total);
+
+        try {
+            $conns = $this->client->mediaSockets($dcId, $concurrency);
+        } catch (\Throwable $e) {
+            $this->client->getLogger()?->debug("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
+            $conns = [$this->client->pool()->connection($dcId)];
+        }
+        $socketCount = count($conns);
+
+        $tokens = $runtime->channel($concurrency);
+        $results = $runtime->channel($concurrency);
+        $errors = [];
+        $written = 0;
+
+        $runtime->run(function () use ($runtime, $location, $dcId, $chunkSize, $total, $tokens, $results, &$errors, &$written, $sink, $size, $conns, $socketCount): void {
+            // Producer: spawn fetches, capped at $concurrency in flight.
+            $runtime->spawn(function () use ($runtime, $location, $dcId, $chunkSize, $total, $tokens, $results, &$errors, $conns, $socketCount): void {
+                for ($i = 0; $i < $total; $i++) {
+                    $tokens->push(true);
+                    $offset = $i * $chunkSize;
+                    $conn = $conns[$i % $socketCount];
+
+                    $runtime->spawn(function () use ($i, $conn, $location, $dcId, $offset, $chunkSize, $tokens, $results, &$errors): void {
+                        $bytes = '';
+                        try {
+                            $chunk = $this->getFileChunkOn($conn, $dcId, $location, $offset, $chunkSize);
+                            $bytes = $chunk['bytes'] ?? '';
+                        } catch (\Throwable $e) {
+                            $errors[$i] = $e;
+                        } finally {
+                            $tokens->pop();
+                        }
+                        $results->push([$i, $bytes]);
+                    });
+                }
+            });
+
+            // Consumer: reorder arrivals, emit contiguous chunks in order.
+            $pending = [];
+            $next = 0;
+            for ($received = 0; $received < $total; $received++) {
+                [$idx, $bytes] = $results->pop();
+                $pending[$idx] = $bytes;
+
+                while (array_key_exists($next, $pending)) {
+                    $b = $pending[$next];
+                    unset($pending[$next]);
+
+                    // Trim the final chunk to the exact file size.
+                    $chunkOffset = $next * $chunkSize;
+                    if ($size > 0 && ($chunkOffset + strlen($b)) > $size) {
+                        $b = substr($b, 0, $size - $chunkOffset);
+                    }
+
+                    if ($b !== '') {
+                        $sink($next, $b);
+                        $written += strlen($b);
+                    }
+                    $next++;
+                }
+            }
+        });
+
+        $tokens->close();
+        $results->close();
+
+        if ($errors !== []) {
+            ksort($errors);
+            $first = reset($errors);
+            throw new MTProtoException(
+                'Parallel download failed on chunk ' . array_key_first($errors) . ': ' . $first->getMessage(),
+                0,
+                $first,
+            );
+        }
+
+        return $written;
+    }
+
+    /**
      * Call upload.getFile for a single chunk.
      *
      * @param array $location InputFileLocation
@@ -383,9 +546,18 @@ class FileDecoder
      */
     protected function getFileChunk(array $location, int $dcId, int $offset, int $limit): array
     {
-        $pool = $this->client->pool();
-        $conn = $pool->connection($dcId);
+        return $this->getFileChunkOn($this->client->pool()->connection($dcId), $dcId, $location, $offset, $limit);
+    }
 
+    /**
+     * Fetch one chunk over an explicit connection (a primary pool client or a
+     * media socket). Same error handling as {@see getFileChunk}.
+     *
+     * @return array{_: string, type: array, mtime: int, bytes: string}
+     * @throws MTProtoException
+     */
+    protected function getFileChunkOn(Client $conn, int $dcId, array $location, int $offset, int $limit): array
+    {
         try {
             $result = $this->fetchChunk($conn, $location, $offset, $limit);
         } catch (MTProtoException $e) {
@@ -393,7 +565,7 @@ class FileDecoder
 
             if ($dcId > 0 && $dcId !== $this->client->getDcId()
                 && str_contains($msg, 'AUTH_KEY_UNREGISTERED')) {
-                $pool->ensureAuthorized($dcId);
+                $this->client->pool()->ensureAuthorized($dcId);
                 $result = $this->fetchChunk($conn, $location, $offset, $limit);
             } elseif (str_contains($msg, 'FILE_REFERENCE_EXPIRED') || str_contains($msg, 'FILE_REFERENCE_INVALID')) {
                 throw new MTProtoException(

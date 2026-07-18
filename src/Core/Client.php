@@ -71,7 +71,7 @@ class Client
     use ManagesCommunities;
     use HandlesEphemeral;
 
-    public const VERSION = '1.0.0-dev';
+    public const VERSION = '0.1.3';
     public const LAYER = 228;
 
     private ConnectionInterface $connection;
@@ -126,6 +126,9 @@ class Client
 
     /** Lazily-built cross-DC connection pool (P3.3). */
     private ?ConnectionPool $pool = null;
+
+    /** Lazily-built per-DC media socket pool for parallel transfer. */
+    private ?MediaConnectionPool $mediaPool = null;
 
     /**
      * @param int $apiId Telegram API ID
@@ -296,6 +299,10 @@ class Client
         } catch (\Throwable) {
         }
         try {
+            $this->mediaPool?->closeAll();
+        } catch (\Throwable) {
+        }
+        try {
             $this->connection->disconnect();
         } catch (\Throwable) {
         }
@@ -375,6 +382,25 @@ class Client
     }
 
     /**
+     * Per-DC media socket pool for parallel file transfer, lazily created.
+     */
+    public function mediaPool(): MediaConnectionPool
+    {
+        return $this->mediaPool ??= new MediaConnectionPool($this, (array)($this->options['transfer'] ?? []));
+    }
+
+    /**
+     * Return up to $want pump-enabled sockets to $dcId for parallel transfer.
+     * Must be called from inside a coroutine container.
+     *
+     * @return list<self>
+     */
+    public function mediaSockets(int $dcId, ?int $want = null): array
+    {
+        return $this->mediaPool()->sockets($dcId, $want);
+    }
+
+    /**
      * True when the current session's auth key was freshly generated during the
      * last connect (rather than loaded from storage). The pool uses this to
      * decide whether a secondary DC still needs an `auth.importAuthorization`.
@@ -422,6 +448,46 @@ class Client
         $opts['session_store'] = new \LaraGram\MTProto\Store\ArrayStore();
 
         $opts['auto_migrate'] = false;
+
+        return new self($this->apiId, $this->apiHash, $opts);
+    }
+
+    /**
+     * Mint a pump-enabled sibling that reuses a DC's existing auth key on its own
+     * TCP socket - a "media socket" for parallel file transfer. The store
+     * is pre-seeded with the shared auth key/salt so {@see connect()} skips the
+     * handshake; the session_id is deliberately omitted so each socket gets its
+     * own (distinct seqno space over the shared key).
+     */
+    public function cloneForMedia(int $dcId, string $authKey, ?string $serverSalt, int $timeDelta): self
+    {
+        $opts = $this->options;
+
+        $opts['dc_id'] = $dcId;
+        unset($opts['connection']);
+        $opts['transport'] = clone $this->transport;
+        $opts['crypto'] = clone $this->crypto;
+        $opts['obfuscated'] = $this->obfuscated;
+        $opts['protocol_tag'] = $this->protocolTag;
+        $opts['proxy'] = $this->proxy;
+        $opts['device'] = $this->deviceProfile;
+        $opts['rate_limiter'] = $this->rateLimiter;
+        $opts['human_pacer'] = $this->humanPacer;
+        $opts['runtime'] = $this->runtime;
+        $opts['logger'] = $this->logger;
+        $opts['files'] = $this->files;
+        $opts['session_dir'] = $this->sessionDir;
+        $opts['use_pump'] = true;
+        $opts['auto_migrate'] = false;
+
+        $store = new \LaraGram\MTProto\Store\ArrayStore();
+        $store->put('media', json_encode([
+            'auth_key' => base64_encode($authKey),
+            'server_salt' => $serverSalt !== null ? base64_encode($serverSalt) : null,
+            'dc_id' => $dcId,
+            'time_delta' => $timeDelta,
+        ]));
+        $opts['session_store'] = $store;
 
         return new self($this->apiId, $this->apiHash, $opts);
     }
@@ -974,6 +1040,11 @@ class Client
 
     public function getResolver(): ?PeerResolver
     {
+        if ($this->peerResolver === null && $this->peerDb !== null) {
+            $this->ensureTlParser();
+            $this->peerResolver = new PeerResolver($this->peerDb, $this);
+        }
+
         return $this->peerResolver;
     }
 
@@ -1159,7 +1230,7 @@ class Client
 
         $this->ensureTlParser();
 
-        $this->peerResolver = new PeerResolver($this->peerDb, $this);
+        $this->peerResolver ??= new PeerResolver($this->peerDb, $this);
         $this->paramPreprocessor = new ParamPreprocessor($this->peerResolver, $this->tlParser);
 
         return $this->paramPreprocessor;

@@ -335,9 +335,17 @@ class PeerResolver
                     }
                 }
             }
-            return;
         } catch (\Throwable $e) {
             $logger?->debug("users.getUsers({$id}, hash 0) failed: {$e->getMessage()}");
+        }
+
+        // users.getUsers does not throw for a channel id - it just returns an
+        // empty/userEmpty vector. Only stop here if it actually produced a
+        // usable user; otherwise fall through and try the channel API, which is
+        // where a member/admin bot learns a channel's real access_hash.
+        $entry = $this->peerDb->getPeer($id);
+        if ($entry !== null && $this->isComplete($entry)) {
+            return;
         }
 
         try {
@@ -371,7 +379,7 @@ class PeerResolver
 
             $this->peerDb->cachePeersFromResponse($result);
         } catch (\Throwable $e) {
-            $this->client->getLogger()->warning("Failed to resolve @{$username}: {$e->getMessage()}");
+            $this->client->getLogger()?->warning("Failed to resolve @{$username}: {$e->getMessage()}");
         }
     }
 
