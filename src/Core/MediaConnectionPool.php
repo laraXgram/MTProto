@@ -46,33 +46,83 @@ final class MediaConnectionPool
             return array_slice($this->sockets[$dcId], 0, $want);
         }
 
-        // Guarantee a valid auth key exists for this DC (home, or an
-        // auth-imported sibling from the primary pool), then share it.
-        $primary = $this->home->pool()->connection($dcId);
-        $session = $primary->getSession();
-        $authKey = $session->getAuthKey();
-
-        if ($authKey === null) {
-            throw new MTProtoException("No auth key available for DC{$dcId}; cannot open media sockets.");
-        }
-
-        $salt = $session->getServerSalt();
-        $delta = $session->getTimeDelta();
+        $sameDc = $dcId === $this->home->getDcId();
+        $logger = $this->home->getLogger();
 
         $existing = $this->sockets[$dcId] ?? [];
-        for ($i = count($existing); $i < $want; $i++) {
-            $socket = $this->home->cloneForMedia($dcId, $authKey, $salt, $delta);
-            // Session name MUST match the key cloneForMedia seeded ('media'), so
-            // StoreSession loads the shared auth key instead of handshaking. Each
-            // socket has its own store, so the shared name never collides.
-            $socket->connect('media');
-            $socket->startPump();
-            $existing[] = $socket;
+        if ($sameDc && $existing === []) {
+            $existing[] = $this->home;
+        }
+
+        $exported = null;
+        if (!$sameDc) {
+            $this->home->pool()->connection($dcId);
+            $exported = $this->home->invokeRaw('auth.exportAuthorization', ['dc_id' => $dcId]);
+            if (!is_array($exported) || !isset($exported['id'], $exported['bytes'])) {
+                throw new MTProtoException("auth.exportAuthorization for DC{$dcId} returned no credentials");
+            }
+        }
+
+        $errors = [];
+
+        $session = $this->home->getSession();
+        while (count($existing) < $want) {
+            try {
+                if ($sameDc) {
+                    $socket = $this->home->cloneForMedia(
+                        $dcId,
+                        $session->getAuthKey(),
+                        $session->getServerSalt(),
+                        $session->getTimeDelta(),
+                    );
+                    $socket->connect('media');
+                    $socket->startPump();
+                } else {
+                    $socket = $this->home->cloneForDc($dcId, ['use_pump' => true]);
+                    $socket->connect("media.dc{$dcId}." . count($existing));
+                    $socket->startPump();
+                    $socket->invokeRaw('auth.importAuthorization', [
+                        'id' => $exported['id'],
+                        'bytes' => $exported['bytes'],
+                    ]);
+                }
+
+                $existing[] = $socket;
+            } catch (\Throwable $e) {
+                $errors[] = $e;
+                $logger?->warning('MediaConnectionPool: extra socket to DC' . $dcId . " failed: {$e->getMessage()}");
+                if (str_contains($e->getMessage(), 'FLOOD') || str_contains($e->getMessage(), '-429')) {
+                    break;
+                }
+            }
+        }
+
+        if ($existing === []) {
+            $first = $errors === [] ? null : reset($errors);
+            throw new MTProtoException(
+                "Failed to open any media socket to DC{$dcId}" . ($first !== null ? ": {$first->getMessage()}" : ''),
+                0,
+                $first,
+            );
+        }
+
+        if ($errors !== []) {
+            $logger?->warning(
+                'MediaConnectionPool: ' . count($errors) . " socket(s) failed for DC{$dcId}; continuing with " . count($existing)
+            );
         }
 
         $this->sockets[$dcId] = $existing;
 
         return array_slice($existing, 0, $want);
+    }
+
+    /**
+     * Number of live media sockets currently open to a DC.
+     */
+    public function countFor(int $dcId): int
+    {
+        return count($this->sockets[DataCenter::getBaseDcId($dcId)] ?? []);
     }
 
     /**
@@ -82,6 +132,9 @@ final class MediaConnectionPool
     {
         foreach ($this->sockets as $list) {
             foreach ($list as $socket) {
+                if ($socket === $this->home) {
+                    continue; // home is owned by the caller, never close it here
+                }
                 try {
                     $socket->disconnect();
                 } catch (\Throwable) {

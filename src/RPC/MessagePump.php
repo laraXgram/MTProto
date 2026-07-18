@@ -189,9 +189,17 @@ final class MessagePump
         $this->timers = [];
 
         // Fail any callers still parked on a result channel.
+        $this->failPending(new MTProtoException('Pump stopped'));
+    }
+
+    /**
+     * Push an error to every caller parked on a pending result channel.
+     */
+    private function failPending(MTProtoException $error): void
+    {
         foreach ($this->pending as $call) {
             try {
-                $call->channel->push(['_pump_error' => new MTProtoException('Pump stopped')]);
+                $call->channel->push(['_pump_error' => $error]);
             } catch (\Throwable) {
             }
         }
@@ -342,7 +350,7 @@ final class MessagePump
                 $length = $this->transport->readLength($this->connection);
                 $packet = $this->connection->receive($length);
                 if ($packet === null) {
-                    continue; //
+                    throw new MTProtoException("Timed out mid-frame ({$length} bytes expected)");
                 }
 
                 $data = $this->transport->unwrap($packet);
@@ -354,9 +362,11 @@ final class MessagePump
 
                 $this->logger?->warning("Pump read error: {$e->getMessage()}");
 
-                if (!$this->connection->isConnected()) {
-                    $this->reconnect();
+                try {
+                    $this->connection->disconnect();
+                } catch (\Throwable) {
                 }
+                $this->reconnect();
             }
         }
     }
@@ -366,6 +376,23 @@ final class MessagePump
      */
     private function routeFrame(string $data): void
     {
+        if (strlen($data) === 4) {
+            $code = unpack('l', $data)[1];
+
+            if ($code >= 0 || $code < -9999) {
+                throw new MTProtoException("Unrecognized 4-byte frame {$code} - stream desync, resyncing");
+            }
+
+            $error = match ($code) {
+                -429 => new MTProtoException('TRANSPORT_FLOOD (-429): server is rate-limiting this connection'),
+                -404 => new MTProtoException('AUTH_KEY_INVALID (-404): auth key not registered on this DC'),
+                default => new MTProtoException("Transport error {$code}"),
+            };
+
+            $this->failPending($error);
+            throw $error;
+        }
+
         $authKeyId = substr($data, 0, 8);
 
         if ($authKeyId === str_repeat("\x00", 8)) {
@@ -375,6 +402,20 @@ final class MessagePump
                 throw new SecurityException('Unencrypted message received after handshake');
             }
             return;
+        }
+
+        $authKey = $this->session->getAuthKey();
+        if ($authKey !== null) {
+            $expected = $this->crypto->calculateAuthKeyId($authKey);
+            if ($authKeyId !== $expected) {
+                $this->logger?->warning(sprintf(
+                    'FrameCodec key-id mismatch: len=%d expected=%s got=%s head=%s',
+                    strlen($data),
+                    bin2hex($expected),
+                    bin2hex($authKeyId),
+                    bin2hex(substr($data, 0, 16)),
+                ));
+            }
         }
 
         [$msgId, $body] = $this->codec->decrypt($data);

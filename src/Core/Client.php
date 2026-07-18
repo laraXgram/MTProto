@@ -71,7 +71,7 @@ class Client
     use ManagesCommunities;
     use HandlesEphemeral;
 
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.2.2';
     public const LAYER = 228;
 
     private ConnectionInterface $connection;
@@ -427,8 +427,10 @@ class Client
 
     /**
      * Mint a sibling client bound to a different DC, for the connection pool.
+     *
+     * @param array $overrides Option overrides applied last (e.g. use_pump).
      */
-    public function cloneForDc(int $dcId): self
+    public function cloneForDc(int $dcId, array $overrides = []): self
     {
         $opts = $this->options;
 
@@ -451,7 +453,7 @@ class Client
 
         $opts['auto_migrate'] = false;
 
-        return new self($this->apiId, $this->apiHash, $opts);
+        return new self($this->apiId, $this->apiHash, array_merge($opts, $overrides));
     }
 
     /**
@@ -1212,6 +1214,7 @@ class Client
                      'WORKER_BUSY_TOO_LONG_RETRY',
                      'INTERNAL_SERVER_ERROR',
                      'Timeout waiting for response',
+                     'TRANSPORT_FLOOD',
                  ] as $needle) {
             if (str_contains($message, $needle)) {
                 return true;

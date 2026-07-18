@@ -305,6 +305,13 @@ final class RPCHandler
         while (microtime(true) - $startTime < $timeout) {
             $lengthData = $this->transport->readLength($this->connection);
             $packet = $this->connection->receive($lengthData);
+            if ($packet === null) {
+                try {
+                    $this->connection->disconnect();
+                } catch (\Throwable) {
+                }
+                throw new MTProtoException("Timed out mid-frame ({$lengthData} bytes expected)");
+            }
             $data = $this->transport->unwrap($packet);
 
             $result = $this->processReceivedData($data);
