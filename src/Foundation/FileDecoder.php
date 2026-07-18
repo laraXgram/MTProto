@@ -423,9 +423,13 @@ class FileDecoder
 
     /**
      * Whether the parallel download path is eligible for this transfer:
-     * concurrency asked for, size known (needed to compute chunk offsets),
-     * a coroutine runtime, and a DC connection that can invoke concurrently
-     * (pump running). Any miss falls back to the serial loop.
+     * concurrency asked for, size known (needed to compute chunk offsets), and
+     * the HOME client running its pump inside a coroutine runtime. The file's
+     * DC deliberately does NOT gate this: cross-DC concurrency comes from the
+     * pump-enabled media sockets minted inside {@see downloadChunksInOrder()}
+     * (the primary cross-DC pool sibling is sync and would always fail a
+     * supportsConcurrentInvoke() check, wrongly forcing serial downloads for
+     * any file living on another DC).
      */
     private function canParallelize(int $dcId, int $size): bool
     {
@@ -437,7 +441,7 @@ class FileDecoder
             return false;
         }
 
-        return $this->client->pool()->connection($dcId)->supportsConcurrentInvoke();
+        return $this->client->supportsConcurrentInvoke();
     }
 
     /**
@@ -463,8 +467,19 @@ class FileDecoder
         try {
             $conns = $this->client->mediaSockets($dcId);
         } catch (\Throwable $e) {
-            $this->client->getLogger()?->debug("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
+            $this->client->getLogger()?->warning("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
             $conns = [$this->client->pool()->connection($dcId)];
+        }
+
+        // Only pump-driven connections tolerate concurrent invokes; a sync
+        // fallback (e.g. a cross-DC pool sibling) must never see overlapping
+        // RPCs, so collapse the window to strictly-serial in that case.
+        $concurrent = array_values(array_filter($conns, static fn (Client $c): bool => $c->supportsConcurrentInvoke()));
+        if ($concurrent !== []) {
+            $conns = $concurrent;
+        } else {
+            $conns = [$conns[0]];
+            $concurrency = 1;
         }
         $socketCount = count($conns);
 
@@ -511,6 +526,16 @@ class FileDecoder
                     $chunkOffset = $next * $chunkSize;
                     if ($size > 0 && ($chunkOffset + strlen($b)) > $size) {
                         $b = substr($b, 0, $size - $chunkOffset);
+                    }
+
+                    // Integrity: every chunk must be exactly as long as expected
+                    // (offsets are pre-computed at CHUNK_SIZE stride). A short
+                    // chunk would silently corrupt the file - fail loudly instead.
+                    $expected = min($chunkSize, $size - $chunkOffset);
+                    if (strlen($b) !== $expected && !isset($errors[$next])) {
+                        $errors[$next] = new MTProtoException(
+                            "Short chunk at offset {$chunkOffset}: got " . strlen($b) . " of {$expected} bytes"
+                        );
                     }
 
                     if ($b !== '') {
