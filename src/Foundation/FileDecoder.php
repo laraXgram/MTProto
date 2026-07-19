@@ -26,6 +26,8 @@ class FileDecoder
     /** Default number of concurrent chunk fetches on the parallel path. */
     public const DEFAULT_CONCURRENCY = 4;
 
+    public const MAX_INFLIGHT_PER_KEY = 8;
+
     protected Client $client;
     protected \LaraGram\Filesystem\Filesystem $files;
 
@@ -34,6 +36,8 @@ class FileDecoder
      * behaviour). Raise via {@see withConcurrency()} to parallelise downloads.
      */
     private int $concurrency = 1;
+
+    public bool $precise = true;
 
     public function __construct(Client $client)
     {
@@ -486,8 +490,17 @@ class FileDecoder
         }
         $socketCount = count($conns);
 
+        $distinctKeys = count(array_unique(array_map(
+            static fn (Client $c): string => md5($c->getSession()->getAuthKey() ?? ''),
+            $conns,
+        )));
+        $keyCap = self::MAX_INFLIGHT_PER_KEY * max(1, $distinctKeys);
+        if ($concurrency > $keyCap) {
+            $concurrency = $keyCap;
+        }
+
         $this->client->getLogger()?->info(
-            "FileDecoder: parallel download DC{$dcId} - {$socketCount} socket(s), window {$concurrency}, {$total} chunk(s)"
+            "FileDecoder: parallel download DC{$dcId} - {$socketCount} socket(s), {$distinctKeys} auth key(s), window {$concurrency}, {$total} chunk(s)"
         );
 
         $tokens = $runtime->channel($concurrency);
@@ -639,12 +652,16 @@ class FileDecoder
      */
     private function fetchChunk(Client $conn, array $location, int $offset, int $limit): mixed
     {
-        return $conn->invoke('upload.getFile', [
-            'precise' => true,
+        $params = [
             'location' => $location,
             'offset' => $offset,
             'limit' => $limit,
-        ]);
+        ];
+        if ($this->precise) {
+            $params['precise'] = true;
+        }
+
+        return $conn->invoke('upload.getFile', $params);
     }
 
     /**
