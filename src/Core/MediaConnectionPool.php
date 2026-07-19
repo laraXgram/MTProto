@@ -55,20 +55,27 @@ final class MediaConnectionPool
         }
 
         $exported = null;
-        if (!$sameDc) {
-            $this->home->pool()->connection($dcId);
-            $exported = $this->home->invokeRaw('auth.exportAuthorization', ['dc_id' => $dcId]);
-            if (!is_array($exported) || !isset($exported['id'], $exported['bytes'])) {
-                throw new MTProtoException("auth.exportAuthorization for DC{$dcId} returned no credentials");
+        $exportAuth = function () use (&$exported, $dcId, $sameDc): array {
+            if ($exported === null) {
+                if (!$sameDc) {
+                    $this->home->pool()->connection($dcId);
+                }
+                $exported = $this->home->invokeRaw('auth.exportAuthorization', ['dc_id' => $dcId]);
+                if (!is_array($exported) || !isset($exported['id'], $exported['bytes'])) {
+                    throw new MTProtoException("auth.exportAuthorization for DC{$dcId} returned no credentials");
+                }
             }
-        }
+            return $exported;
+        };
 
         $errors = [];
+        $sharedKeyFallback = false;
+        $reExports = 0;
 
         $session = $this->home->getSession();
         while (count($existing) < $want) {
             try {
-                if ($sameDc) {
+                if ($sharedKeyFallback) {
                     $socket = $this->home->cloneForMedia(
                         $dcId,
                         $session->getAuthKey(),
@@ -78,20 +85,35 @@ final class MediaConnectionPool
                     $socket->connect('media');
                     $socket->startPump();
                 } else {
+                    $auth = $exportAuth();
                     $socket = $this->home->cloneForDc($dcId, ['use_pump' => true]);
                     $socket->connect("media.dc{$dcId}." . count($existing));
                     $socket->startPump();
                     $socket->invokeRaw('auth.importAuthorization', [
-                        'id' => $exported['id'],
-                        'bytes' => $exported['bytes'],
+                        'id' => $auth['id'],
+                        'bytes' => $auth['bytes'],
                     ]);
                 }
 
                 $existing[] = $socket;
             } catch (\Throwable $e) {
+                $msg = $e->getMessage();
+
+                if (!$sharedKeyFallback && str_contains($msg, 'AUTH_BYTES_INVALID') && ++$reExports <= 2) {
+                    $exported = null;
+                    continue;
+                }
+
+                if (!$sharedKeyFallback && $sameDc
+                    && (str_contains($msg, 'DC_ID_INVALID') || str_contains($msg, 'AUTH_BYTES_INVALID') || str_contains($msg, 'EXPORT'))) {
+                    $logger?->warning("MediaConnectionPool: per-socket auth unavailable for DC{$dcId} ({$msg}) - falling back to shared auth key");
+                    $sharedKeyFallback = true;
+                    continue;
+                }
+
                 $errors[] = $e;
-                $logger?->warning('MediaConnectionPool: extra socket to DC' . $dcId . " failed: {$e->getMessage()}");
-                if (str_contains($e->getMessage(), 'FLOOD') || str_contains($e->getMessage(), '-429')) {
+                $logger?->warning('MediaConnectionPool: extra socket to DC' . $dcId . " failed: {$msg}");
+                if (str_contains($msg, 'FLOOD') || str_contains($msg, '-429')) {
                     break;
                 }
             }
