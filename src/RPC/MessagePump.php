@@ -15,6 +15,7 @@ use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\TL\TLParser;
 use LaraGram\MTProto\TL\TLSerializer;
 use LaraGram\MTProto\Exceptions\MTProtoException;
+use LaraGram\MTProto\Exceptions\ReadTimeoutException;
 use LaraGram\MTProto\Exceptions\SecurityException;
 
 final class MessagePump
@@ -71,6 +72,23 @@ final class MessagePump
 
     /** Seconds between keep-alive pings. */
     private float $pingInterval = 25.0;
+
+    /**
+     * Lightweight transfer diagnostics, cumulative since start().
+     * @var array<string, int>
+     */
+    private array $stats = [
+        'frames_in' => 0,
+        'bytes_in' => 0,
+        'frames_out' => 0,
+        'bytes_out' => 0,
+        'transport_errors' => 0,
+        'garbage_frames' => 0,
+        'reconnects' => 0,
+        'resends' => 0,
+        'timeouts' => 0,
+        'rpc_errors' => 0,
+    ];
 
     public function __construct(
         private ConnectionInterface         $connection,
@@ -212,6 +230,16 @@ final class MessagePump
     }
 
     /**
+     * Cumulative transfer diagnostics (frames/bytes in+out, errors, reconnects).
+     *
+     * @return array<string, int>
+     */
+    public function getStats(): array
+    {
+        return $this->stats;
+    }
+
+    /**
      * Ping + InvokeWithLayer(InitConnection(help.getConfig)). Requires the
      * reader coroutine to be live, so call after start().
      *
@@ -259,6 +287,12 @@ final class MessagePump
      */
     public function invoke(string $method, array $params = [], float $timeout = 30.0, bool $contentRelated = true): mixed
     {
+        // File-transfer RPCs legitimately queue behind megabytes of in-flight
+        // parts; a 30s cap makes every congestion blip a timeout->resend spiral.
+        if ($timeout <= 30.0 && str_starts_with($method, 'upload.')) {
+            $timeout = 180.0;
+        }
+
         $message = array_merge(['_' => $method], $params);
         $payload = $this->serializer->serialize($message);
 
@@ -297,12 +331,15 @@ final class MessagePump
             contentRelated: $contentRelated,
             method: $method,
         );
+        $this->stats['frames_out']++;
+        $this->stats['bytes_out'] += strlen($packet);
         $this->withWriteLock(fn() => $this->connection->send($packet));
 
         $boxed = $channel->pop($timeout);
 
         if ($boxed === false) {
             unset($this->pending[$msgId]);
+            $this->stats['timeouts']++;
             throw new MTProtoException("Timeout waiting for response to {$method} ({$msgId})");
         }
 
@@ -321,6 +358,8 @@ final class MessagePump
     private function sendEncrypted(string $messageData, bool $contentRelated): int
     {
         [$msgId, $packet] = $this->codec->encrypt($messageData, $contentRelated);
+        $this->stats['frames_out']++;
+        $this->stats['bytes_out'] += strlen($packet);
         $this->withWriteLock(fn() => $this->connection->send($packet));
 
         return $msgId;
@@ -355,6 +394,17 @@ final class MessagePump
 
                 $data = $this->transport->unwrap($packet);
                 $this->routeFrame($data);
+            } catch (ReadTimeoutException) {
+                // Quiet link on a frame boundary - the stream is intact.
+                // Keep-alive pings cover liveness; reconnecting here would kill
+                // and resend every in-flight call (congestion storm).
+                if ($this->running && $this->connection->isConnected()) {
+                    continue;
+                }
+                if (!$this->running) {
+                    break;
+                }
+                $this->reconnect();
             } catch (\Throwable $e) {
                 if (!$this->running) {
                     break;
@@ -376,10 +426,14 @@ final class MessagePump
      */
     private function routeFrame(string $data): void
     {
+        $this->stats['frames_in']++;
+        $this->stats['bytes_in'] += strlen($data);
+
         if (strlen($data) === 4) {
             $code = unpack('l', $data)[1];
 
             if ($code >= 0 || $code < -9999) {
+                $this->stats['garbage_frames']++;
                 throw new MTProtoException("Unrecognized 4-byte frame {$code} - stream desync, resyncing");
             }
 
@@ -389,6 +443,7 @@ final class MessagePump
                 default => new MTProtoException("Transport error {$code}"),
             };
 
+            $this->stats['transport_errors']++;
             $this->failPending($error);
             throw $error;
         }
@@ -406,7 +461,7 @@ final class MessagePump
 
         $authKey = $this->session->getAuthKey();
         if ($authKey !== null) {
-            $expected = $this->crypto->calculateAuthKeyId($authKey);
+            $expected = $this->codec->authKeyId($authKey);
             if ($authKeyId !== $expected) {
                 $this->logger?->warning(sprintf(
                     'FrameCodec key-id mismatch: len=%d expected=%s got=%s head=%s',
@@ -505,6 +560,7 @@ final class MessagePump
         }
 
         if ($constructorId === self::RPC_ERROR) {
+            $this->stats['rpc_errors']++;
             $error = $this->serializer->deserialize($resultData);
             $this->resolve($reqMsgId, [
                 '_pump_error' => new MTProtoException(
@@ -585,6 +641,9 @@ final class MessagePump
 
         [$newMsgId, $packet] = $this->codec->encrypt($call->payload, $call->contentRelated);
         $this->pending[$newMsgId] = $call;
+        $this->stats['resends']++;
+        $this->stats['frames_out']++;
+        $this->stats['bytes_out'] += strlen($packet);
         $this->withWriteLock(fn() => $this->connection->send($packet));
     }
 
@@ -718,6 +777,7 @@ final class MessagePump
                 $base = min($attempt * 2, 10);
                 $this->runtime->sleep($base / 2 + (mt_rand(0, 1000) / 1000.0) * ($base / 2));
                 $this->connection = ($this->reconnector)();
+                $this->stats['reconnects']++;
                 $this->logger?->info("Pump reconnected (attempt {$attempt})");
 
                 // Replay calls that never got an answer (new msg_ids, re-keyed).

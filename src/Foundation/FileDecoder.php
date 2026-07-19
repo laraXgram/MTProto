@@ -480,8 +480,15 @@ class FileDecoder
         } else {
             $conns = [$conns[0]];
             $concurrency = 1;
+            $this->client->getLogger()?->warning(
+                "FileDecoder: no concurrent-capable socket for DC{$dcId} - download collapsed to SERIAL (throughput will be poor)"
+            );
         }
         $socketCount = count($conns);
+
+        $this->client->getLogger()?->info(
+            "FileDecoder: parallel download DC{$dcId} - {$socketCount} socket(s), window {$concurrency}, {$total} chunk(s)"
+        );
 
         $tokens = $runtime->channel($concurrency);
         $results = $runtime->channel($concurrency);
@@ -494,13 +501,25 @@ class FileDecoder
                 for ($i = 0; $i < $total; $i++) {
                     $tokens->push(true);
                     $offset = $i * $chunkSize;
-                    $conn = $conns[$i % $socketCount];
 
-                    $runtime->spawn(function () use ($i, $conn, $location, $dcId, $offset, $chunkSize, $tokens, $results, &$errors): void {
+                    $runtime->spawn(function () use ($runtime, $i, $conns, $socketCount, $location, $dcId, $offset, $chunkSize, $tokens, $results, &$errors): void {
                         $bytes = '';
                         try {
-                            $chunk = $this->getFileChunkOn($conn, $dcId, $location, $offset, $chunkSize);
-                            $bytes = $chunk['bytes'] ?? '';
+                            // A socket mid-reconnect must not kill the whole
+                            // transfer - fail the chunk over to a sibling.
+                            for ($attempt = 0; ; $attempt++) {
+                                $conn = $conns[($i + $attempt) % $socketCount];
+                                try {
+                                    $chunk = $this->getFileChunkOn($conn, $dcId, $location, $offset, $chunkSize);
+                                    $bytes = $chunk['bytes'] ?? '';
+                                    break;
+                                } catch (\Throwable $e) {
+                                    if ($attempt >= 2) {
+                                        throw $e;
+                                    }
+                                    $runtime->sleep(0.5 * ($attempt + 1));
+                                }
+                            }
                         } catch (\Throwable $e) {
                             $errors[$i] = $e;
                         } finally {

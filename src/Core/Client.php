@@ -71,7 +71,7 @@ class Client
     use ManagesCommunities;
     use HandlesEphemeral;
 
-    public const VERSION = '0.2.2';
+    public const VERSION = '0.2.3';
     public const LAYER = 228;
 
     private ConnectionInterface $connection;
@@ -1215,6 +1215,9 @@ class Client
                      'INTERNAL_SERVER_ERROR',
                      'Timeout waiting for response',
                      'TRANSPORT_FLOOD',
+                     'Failed to send data',
+                     'Pump stopped',
+                     'Not connected to server',
                  ] as $needle) {
             if (str_contains($message, $needle)) {
                 return true;

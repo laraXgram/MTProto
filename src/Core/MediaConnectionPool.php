@@ -112,6 +112,14 @@ final class MediaConnectionPool
             );
         }
 
+        $logger?->info(sprintf(
+            'MediaConnectionPool: %d socket(s) live for DC%d (wanted %d%s)',
+            count($existing),
+            $dcId,
+            $want,
+            $sameDc ? ', incl. home' : ', cross-DC',
+        ));
+
         $this->sockets[$dcId] = $existing;
 
         return array_slice($existing, 0, $want);

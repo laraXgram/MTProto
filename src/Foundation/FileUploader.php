@@ -174,10 +174,14 @@ final class FileUploader
         try {
             $conns = $this->client->mediaSockets($this->client->getDcId());
         } catch (\Throwable $e) {
-            $this->client->getLogger()?->debug("media sockets unavailable for upload, using single connection: {$e->getMessage()}");
+            $this->client->getLogger()?->warning("FileUploader: media sockets unavailable, using single connection: {$e->getMessage()}");
             $conns = [$this->client];
         }
         $socketCount = count($conns);
+
+        $this->client->getLogger()?->info(
+            "FileUploader: parallel upload - {$socketCount} socket(s), window {$this->concurrency}, {$totalParts} part(s)"
+        );
 
         $tokens = $runtime->channel($this->concurrency);
         $done = $runtime->channel($totalParts);
@@ -187,11 +191,23 @@ final class FileUploader
             for ($part = 0; $part < $totalParts; $part++) {
                 $tokens->push(true);
                 $chunk = substr($contents, $part * self::PART_SIZE, self::PART_SIZE);
-                $conn = $conns[$part % $socketCount];
 
-                $runtime->spawn(function () use ($conn, $chunk, $fileId, $part, $totalParts, $isBig, $tokens, $done, &$errors) {
+                $runtime->spawn(function () use ($runtime, $conns, $socketCount, $chunk, $fileId, $part, $totalParts, $isBig, $tokens, $done, &$errors) {
                     try {
-                        $this->uploadPartOn($conn, $chunk, $fileId, $part, $totalParts, $isBig);
+                        // A socket mid-reconnect must not kill the whole
+                        // upload - fail the part over to a sibling socket.
+                        for ($attempt = 0; ; $attempt++) {
+                            $conn = $conns[($part + $attempt) % $socketCount];
+                            try {
+                                $this->uploadPartOn($conn, $chunk, $fileId, $part, $totalParts, $isBig);
+                                break;
+                            } catch (\Throwable $e) {
+                                if ($attempt >= 2) {
+                                    throw $e;
+                                }
+                                $runtime->sleep(0.5 * ($attempt + 1));
+                            }
+                        }
                     } catch (\Throwable $e) {
                         $errors[$part] = $e;
                     } finally {

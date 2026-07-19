@@ -6,6 +6,7 @@ namespace LaraGram\MTProto\Transport;
 
 use LaraGram\MTProto\Contracts\ConnectionInterface;
 use LaraGram\MTProto\Contracts\TransportInterface;
+use LaraGram\MTProto\Exceptions\ReadTimeoutException;
 use LaraGram\MTProto\Exceptions\TransportException;
 
 /**
@@ -64,9 +65,10 @@ class IntermediateTransport implements TransportInterface
     public function readLength(ConnectionInterface $connection): int
     {
         $lengthBytes = $connection->receive(4);
-        
+
         if ($lengthBytes === null) {
-            throw TransportException::invalidFrame('Failed to read length');
+            // Zero bytes consumed - still on a frame boundary; idle, not broken.
+            throw ReadTimeoutException::idle();
         }
 
         $length = unpack('V', $lengthBytes)[1];

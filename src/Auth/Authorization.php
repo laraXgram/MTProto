@@ -285,6 +285,18 @@ class Authorization
             throw new MTProtoException('Bot token is empty.');
         }
 
+        // A restored session is usually already authorized; re-importing the
+        // bot token on every start burns a heavily flood-limited call.
+        try {
+            $self = $this->client->invoke('users.getUsers', ['id' => [['_' => 'inputUserSelf']]]);
+            $me = $self[0] ?? null;
+            if (is_array($me) && ($me['_'] ?? '') === 'user') {
+                return $me;
+            }
+        } catch (\Throwable) {
+            // Not authorized yet (AUTH_KEY_UNREGISTERED etc.) - fall through.
+        }
+
         try {
             $result = $this->client->invoke('auth.importBotAuthorization', [
                 'flags' => 0,

@@ -6,6 +6,7 @@ namespace LaraGram\MTProto\Transport;
 
 use LaraGram\MTProto\Contracts\ConnectionInterface;
 use LaraGram\MTProto\Contracts\TransportInterface;
+use LaraGram\MTProto\Exceptions\ReadTimeoutException;
 use LaraGram\MTProto\Exceptions\TransportException;
 
 /**
@@ -66,9 +67,10 @@ class AbridgedTransport implements TransportInterface
     public function readLength(ConnectionInterface $connection): int
     {
         $byte = $connection->receive(1);
-        
+
         if ($byte === null) {
-            throw TransportException::invalidFrame('Failed to read length byte');
+            // Zero bytes consumed - still on a frame boundary; idle, not broken.
+            throw ReadTimeoutException::idle();
         }
 
         $length = ord($byte);

@@ -86,7 +86,8 @@ class FullTransport implements TransportInterface
         // Read length (4 bytes)
         $lengthBytes = $connection->receive(4);
         if ($lengthBytes === null) {
-            throw TransportException::invalidFrame('Failed to read length');
+            // Zero bytes consumed - still on a frame boundary; idle, not broken.
+            throw \LaraGram\MTProto\Exceptions\ReadTimeoutException::idle();
         }
 
         $length = unpack('V', $lengthBytes)[1];

@@ -11,7 +11,7 @@ use Socket;
 
 /**
  * Synchronous TCP connection implementation.
- * 
+ *
  * Uses PHP's native socket functions for blocking I/O.
  * This is the default driver - no external dependencies required.
  */
@@ -82,10 +82,10 @@ class SyncConnection implements ConnectionInterface, DriverInterface
         socket_set_nonblock($socket);
 
         $result = @socket_connect($socket, $address, $port);
-        
+
         if ($result === false) {
             $error = socket_last_error($socket);
-            
+
             // EINPROGRESS is expected for non-blocking connect
             if ($error !== SOCKET_EINPROGRESS && $error !== SOCKET_EALREADY) {
                 socket_close($socket);
@@ -96,7 +96,7 @@ class SyncConnection implements ConnectionInterface, DriverInterface
             $read = [];
             $write = [$socket];
             $except = [];
-            
+
             $timeoutSec = (int) $timeout;
             $timeoutUsec = (int) (($timeout - $timeoutSec) * 1000000);
 
@@ -126,7 +126,7 @@ class SyncConnection implements ConnectionInterface, DriverInterface
         // Recalculate remaining timeout
         $elapsed = microtime(true) - $startTime;
         $remainingTimeout = max(1.0, $timeout - $elapsed);
-        
+
         socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, $this->timeoutToArray($remainingTimeout));
         socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, $this->timeoutToArray($remainingTimeout));
 
@@ -179,12 +179,18 @@ class SyncConnection implements ConnectionInterface, DriverInterface
 
         $totalSent = 0;
         $length = strlen($data);
+        $stalls = 0;
 
         while ($totalSent < $length) {
             $sent = @socket_send($this->socket, substr($data, $totalSent), $length - $totalSent, 0);
 
             if ($sent === false) {
                 $error = socket_last_error($this->socket);
+                if ($error === SOCKET_EAGAIN || $error === SOCKET_EWOULDBLOCK || $error === SOCKET_ETIMEDOUT) {
+                    if (++$stalls < 3) {
+                        continue;
+                    }
+                }
                 $this->disconnect();
                 throw ConnectionException::sendFailed(socket_strerror($error));
             }
@@ -195,6 +201,7 @@ class SyncConnection implements ConnectionInterface, DriverInterface
             }
 
             $totalSent += $sent;
+            $stalls = 0;
         }
 
         return $totalSent;
@@ -215,10 +222,10 @@ class SyncConnection implements ConnectionInterface, DriverInterface
         // If length is 0, read all available data
         if ($length === 0) {
             $data = @socket_read($this->socket, 65536, PHP_BINARY_READ);
-            
+
             if ($data === false) {
                 $error = socket_last_error($this->socket);
-                if ($error === SOCKET_EAGAIN || $error === SOCKET_EWOULDBLOCK) {
+                if ($error === SOCKET_EAGAIN || $error === SOCKET_EWOULDBLOCK || $error === SOCKET_ETIMEDOUT) {
                     return null; // Timeout
                 }
                 $this->disconnect();
@@ -233,26 +240,41 @@ class SyncConnection implements ConnectionInterface, DriverInterface
             return $data;
         }
 
-        // Read exact number of bytes
+        // Read exact number of bytes. The timeout is a STALL detector, not a
+        // total-transfer cap: as long as bytes keep arriving the deadline
+        // advances, so a large frame on a slow/contended link still completes.
         $data = '';
         $remaining = $length;
-        $startTime = microtime(true);
+        $lastProgress = microtime(true);
 
         while ($remaining > 0) {
-            // Check timeout
-            if (microtime(true) - $startTime > $timeout) {
-                return null;
+            if (microtime(true) - $lastProgress > $timeout) {
+                if ($data === '') {
+                    return null;
+                }
+                $this->disconnect();
+                throw ConnectionException::receiveFailed(
+                    'read stalled mid-frame (' . strlen($data) . " of {$length} bytes consumed)"
+                );
             }
 
             $chunk = @socket_read($this->socket, $remaining, PHP_BINARY_READ);
 
             if ($chunk === false) {
                 $error = socket_last_error($this->socket);
-                if ($error === SOCKET_EAGAIN || $error === SOCKET_EWOULDBLOCK) {
-                    continue; // Retry on timeout
+                if ($error === SOCKET_ETIMEDOUT && $data === '') {
+                    // No bytes consumed: the stream is still on a frame
+                    // boundary. Report "no data" instead of killing a healthy
+                    // socket - readers decide whether idle is fatal.
+                    return null;
+                }
+                if ($error === SOCKET_EAGAIN || $error === SOCKET_EWOULDBLOCK || $error === SOCKET_ETIMEDOUT) {
+                    continue; // No new bytes this round; the stall check above decides
                 }
                 $this->disconnect();
-                throw ConnectionException::receiveFailed(socket_strerror($error));
+                throw ConnectionException::receiveFailed(
+                    socket_strerror($error) . ($data !== '' ? ' (mid-frame, ' . strlen($data) . ' bytes consumed)' : '')
+                );
             }
 
             if ($chunk === '') {
@@ -262,6 +284,7 @@ class SyncConnection implements ConnectionInterface, DriverInterface
 
             $data .= $chunk;
             $remaining -= strlen($chunk);
+            $lastProgress = microtime(true);
         }
 
         return $data;

@@ -31,6 +31,10 @@ final class FrameCodec
      */
     private array $seenMsgIds = [];
 
+    /** Memoized SHA1-derived auth key id (recomputing it per frame is waste). */
+    private ?string $authKeyIdCache = null;
+    private ?string $authKeyIdSource = null;
+
     public function __construct(
         private readonly CryptoInterface    $crypto,
         private readonly SessionInterface   $session,
@@ -38,6 +42,20 @@ final class FrameCodec
         private readonly ?LoggerInterface   $logger = null,
     )
     {
+    }
+
+    /**
+     * SHA1-derived 8-byte auth key id, memoized per key (a 256-byte string
+     * compare replaces a SHA1 per frame on the hot path).
+     */
+    public function authKeyId(string $authKey): string
+    {
+        if ($this->authKeyIdSource !== $authKey) {
+            $this->authKeyIdCache = $this->crypto->calculateAuthKeyId($authKey);
+            $this->authKeyIdSource = $authKey;
+        }
+
+        return $this->authKeyIdCache;
     }
 
     /**
@@ -77,9 +95,7 @@ final class FrameCodec
         $kdf = $this->crypto->kdf($authKey, $msgKey, true);
         $encrypted = $this->crypto->aesIgeEncrypt($innerData, $kdf['aes_key'], $kdf['aes_iv']);
 
-        $authKeyId = $this->crypto->calculateAuthKeyId($authKey);
-
-        return [$msgId, $this->transport->wrap($authKeyId . $msgKey . $encrypted)];
+        return [$msgId, $this->transport->wrap($this->authKeyId($authKey) . $msgKey . $encrypted)];
     }
 
     /**
@@ -94,7 +110,7 @@ final class FrameCodec
             throw new SecurityException('No auth key for decryption');
         }
 
-        if (substr($data, 0, 8) !== $this->crypto->calculateAuthKeyId($authKey)) {
+        if (substr($data, 0, 8) !== $this->authKeyId($authKey)) {
             throw new SecurityException('Auth key ID mismatch');
         }
 

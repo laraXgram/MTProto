@@ -303,7 +303,11 @@ final class RPCHandler
         $startTime = microtime(true);
 
         while (microtime(true) - $startTime < $timeout) {
-            $lengthData = $this->transport->readLength($this->connection);
+            try {
+                $lengthData = $this->transport->readLength($this->connection);
+            } catch (\LaraGram\MTProto\Exceptions\ReadTimeoutException) {
+                continue; // idle link on a frame boundary - keep waiting out the deadline
+            }
             $packet = $this->connection->receive($lengthData);
             if ($packet === null) {
                 try {
