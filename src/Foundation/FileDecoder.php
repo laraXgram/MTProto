@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\MTProto\Core\Client;
-use LaraGram\MTProto\Core\DataCenter;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\TL\TLObject;
 
@@ -26,8 +25,6 @@ class FileDecoder
 
     /** Default number of concurrent chunk fetches on the parallel path. */
     public const DEFAULT_CONCURRENCY = 4;
-
-    public const MAX_INFLIGHT_PER_KEY = 8;
 
     protected Client $client;
     protected \LaraGram\Filesystem\Filesystem $files;
@@ -467,9 +464,8 @@ class FileDecoder
         $total = (int) ceil($size / $chunkSize);
         $concurrency = min($this->concurrency, $total);
 
-        $sameDc = DataCenter::getBaseDcId($dcId) === DataCenter::getBaseDcId($this->client->getDcId());
         try {
-            $conns = $this->client->mediaSockets($dcId, $sameDc ? 1 : null);
+            $conns = $this->client->mediaSockets($dcId);
         } catch (\Throwable $e) {
             $this->client->getLogger()?->warning("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
             $conns = [$this->client->pool()->connection($dcId)];
@@ -494,10 +490,6 @@ class FileDecoder
             static fn (Client $c): string => md5($c->getSession()->getAuthKey() ?? ''),
             $conns,
         )));
-        $keyCap = self::MAX_INFLIGHT_PER_KEY * max(1, $distinctKeys);
-        if ($concurrency > $keyCap) {
-            $concurrency = $keyCap;
-        }
 
         $this->client->getLogger()?->info(
             "FileDecoder: parallel download DC{$dcId} - {$socketCount} socket(s), {$distinctKeys} auth key(s), window {$concurrency}, {$total} chunk(s)"

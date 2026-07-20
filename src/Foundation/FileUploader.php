@@ -10,14 +10,25 @@ use RuntimeException;
 
 final class FileUploader
 {
-    /** Part size - 512 KiB. Must evenly divide 1 MiB. */
+    /**
+     * Part size - 512 KiB, the maximum Telegram allows (`524288 % part_size == 0`
+     * per https://core.telegram.org/api/files). Bigger parts are rejected, so a
+     * large file scales in the number of parts, not their size.
+     */
     public const PART_SIZE = 524288;
 
     /** Files larger than this go the "big file" route (no md5). */
     public const BIG_FILE_THRESHOLD = 10 * 1024 * 1024;
 
-    /** Telegram's hard cap on the number of parts. */
-    public const MAX_PARTS = 4000;
+    /**
+     * Upper bound on parts. Telegram's real cap is the appConfig value
+     * `upload_max_fileparts_default` (non-premium) / `_premium` - currently 4000
+     * / 8000. At the 512 KiB max part size that is ~2 GiB / ~4 GiB. The old
+     * hard-coded 4000 rejected any file above ~2 GiB even on accounts allowed to
+     * send it; 8000 matches the premium ceiling and the server still enforces
+     * the true per-account limit, surfacing a clean RPC error if exceeded.
+     */
+    public const MAX_PARTS = 8000;
 
     /** Default max parts in flight at once on the parallel path. */
     public const DEFAULT_CONCURRENCY = 4;
