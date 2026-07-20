@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\MTProto\Core\Client;
+use LaraGram\MTProto\Core\DataCenter;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\TL\TLObject;
 
@@ -466,10 +467,9 @@ class FileDecoder
         $total = (int) ceil($size / $chunkSize);
         $concurrency = min($this->concurrency, $total);
 
-        // Socket count comes from config (transfer.media_sockets); the in-flight
-        // window ($concurrency) is independent - depth >1 per socket hides RTT.
+        $sameDc = DataCenter::getBaseDcId($dcId) === DataCenter::getBaseDcId($this->client->getDcId());
         try {
-            $conns = $this->client->mediaSockets($dcId);
+            $conns = $this->client->mediaSockets($dcId, $sameDc ? 1 : null);
         } catch (\Throwable $e) {
             $this->client->getLogger()?->warning("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
             $conns = [$this->client->pool()->connection($dcId)];

@@ -55,11 +55,9 @@ final class MediaConnectionPool
         }
 
         $exported = null;
-        $exportAuth = function () use (&$exported, $dcId, $sameDc): array {
+        $exportAuth = function () use (&$exported, $dcId): array {
             if ($exported === null) {
-                if (!$sameDc) {
-                    $this->home->pool()->connection($dcId);
-                }
+                $this->home->pool()->connection($dcId);
                 $exported = $this->home->invokeRaw('auth.exportAuthorization', ['dc_id' => $dcId]);
                 if (!is_array($exported) || !isset($exported['id'], $exported['bytes'])) {
                     throw new MTProtoException("auth.exportAuthorization for DC{$dcId} returned no credentials");
@@ -69,13 +67,12 @@ final class MediaConnectionPool
         };
 
         $errors = [];
-        $sharedKeyFallback = false;
         $reExports = 0;
 
         $session = $this->home->getSession();
         while (count($existing) < $want) {
             try {
-                if ($sharedKeyFallback) {
+                if ($sameDc) {
                     $socket = $this->home->cloneForMedia(
                         $dcId,
                         $session->getAuthKey(),
@@ -99,15 +96,8 @@ final class MediaConnectionPool
             } catch (\Throwable $e) {
                 $msg = $e->getMessage();
 
-                if (!$sharedKeyFallback && str_contains($msg, 'AUTH_BYTES_INVALID') && ++$reExports <= 2) {
+                if (!$sameDc && str_contains($msg, 'AUTH_BYTES_INVALID') && ++$reExports <= 2) {
                     $exported = null;
-                    continue;
-                }
-
-                if (!$sharedKeyFallback && $sameDc
-                    && (str_contains($msg, 'DC_ID_INVALID') || str_contains($msg, 'AUTH_BYTES_INVALID') || str_contains($msg, 'EXPORT'))) {
-                    $logger?->warning("MediaConnectionPool: per-socket auth unavailable for DC{$dcId} ({$msg}) - falling back to shared auth key");
-                    $sharedKeyFallback = true;
                     continue;
                 }
 
