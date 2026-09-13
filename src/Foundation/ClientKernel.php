@@ -189,6 +189,21 @@ class ClientKernel
         return $this->app;
     }
 
+    /**
+     * Set the application instance (e.g. a per-update Surge sandbox).
+     */
+    public function setApplication(Application $app): static
+    {
+        $this->app = $app;
+
+        return $this;
+    }
+
+    public function getListener(): ClientListener
+    {
+        return $this->listener;
+    }
+
     protected function reportException(Throwable $e): void
     {
         try {

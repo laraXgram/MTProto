@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\Contracts\Foundation\Application;
+use LaraGram\MTProto\Rpc\RpcServer;
 use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\TL\TLObject;
 use LaraGram\MTProto\Updates\PumpLoop;
@@ -36,12 +37,7 @@ class PumpProcess
         $runtime = $app->make(Runtime::class);
         $logger = $app['mtproto.logger'] ?? null;
 
-        $sessions = $this->resolveSessions($app, $manager);
-
-        if ($sessions === []) {
-            $logger?->warning('[pump-process] No authorized sessions to start.');
-            return;
-        }
+        $sessions = $this->waitForSessions($app, $manager, $runtime, $logger);
 
         $pumps = [];
         foreach ($sessions as $session) {
@@ -51,7 +47,17 @@ class PumpProcess
 
         $logger?->info('[pump-process] Starting sessions: ' . implode(', ', array_keys($pumps)));
 
-        $runtime->run(function () use ($runtime, $manager, $pumps, $logger) {
+        ClientManager::ownSessions();
+
+        $rpc = ($app['config']['mtproto.rpc.enabled'] ?? true)
+            ? new RpcServer($manager, $runtime, $manager->rpcSocket(), array_keys($pumps), $logger)
+            : null;
+
+        $runtime->run(function () use ($runtime, $manager, $pumps, $logger, $rpc) {
+            if ($rpc !== null) {
+                $runtime->spawn(fn () => $rpc->serve());
+            }
+
             foreach ($pumps as $session => $pump) {
                 $runtime->spawn(function () use ($manager, $pump, $session, $logger) {
                     try {
@@ -83,6 +89,28 @@ class PumpProcess
                 }
             }
         });
+    }
+
+    /**
+     * Wait until at least one session is authorized (e.g. with client:auth).
+     *
+     * @return string[]
+     */
+    protected function waitForSessions(Application $app, ClientManager $manager, Runtime $runtime, $logger): array
+    {
+        $interval = max(1.0, (float)($app['config']['mtproto.surge.session_check_interval'] ?? 30));
+        $warned = false;
+
+        while (($sessions = $this->resolveSessions($app, $manager)) === []) {
+            if (!$warned) {
+                $logger?->warning('[pump-process] No authorized sessions to start; waiting for one (php laragram client:auth).');
+                $warned = true;
+            }
+
+            $runtime->inCoroutine() ? $runtime->sleep($interval) : usleep((int)($interval * 1_000_000));
+        }
+
+        return $sessions;
     }
 
     /**

@@ -52,12 +52,40 @@ return [
     | `sessions`: which sessions the pump boots - one reader coroutine each, on
     | one shared runtime. Empty = every session in 'sessions' above (plus
     | 'default'). Only already-authorized sessions start (no interactive auth in
-    | a server).
+    | a server). Without any, the pump waits and re-checks every
+    | `session_check_interval` seconds.
+    |
+    | `isolation`: how application state is reset between updates. "concurrent"
+    | handles updates concurrently and flushes state once none is running;
+    | "sandbox" handles one update at a time, each in a fresh application
+    | sandbox (like Surge requests). Network I/O and RPC stay concurrent.
     |
     */
     'surge' => [
         'autostart' => true,
         'sessions' => [],
+        'session_check_interval' => 30,
+        'isolation' => env('CLIENT_SURGE_ISOLATION', 'concurrent'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pump RPC
+    |--------------------------------------------------------------------------
+    |
+    | The pump process owns the session connections, so other processes (Surge
+    | HTTP workers, MCP servers, ...) must not open their own connection on the
+    | same session. When enabled, the pump serves calls on a local Unix socket
+    | and ClientManager::invoker() forwards to it whenever the socket exists.
+    |
+    | `socket`: null = storage/framework/mtproto-rpc.sock (or a temp path when
+    | that is too long for a Unix socket).
+    |
+    */
+    'rpc' => [
+        'enabled' => env('CLIENT_RPC_ENABLED', true),
+        'socket' => env('CLIENT_RPC_SOCKET'),
+        'timeout' => 30,
     ],
 
     /*

@@ -6,15 +6,23 @@ namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\Contracts\Foundation\Application;
 use LaraGram\Listening\Exceptions\ListenNotFoundException;
+use LaraGram\MTProto\Events\UpdateReceived;
+use LaraGram\MTProto\Runtime\Contracts\Channel;
+use LaraGram\MTProto\Runtime\Contracts\Runtime;
 use LaraGram\MTProto\TL\TLObject;
 use Throwable;
 
 class ClientDispatcher
 {
     /**
-     * Lazily-built no-clone state flusher (null when Surge is absent).
+     * Lazily-built Surge state flusher (null when Surge is absent).
      */
     protected ?object $flusher = null;
+
+    /**
+     * Lets one sandboxed update run at a time (null outside of a coroutine runtime).
+     */
+    protected ?Channel $lock = null;
 
     public function __construct(protected Application $app)
     {
@@ -22,11 +30,57 @@ class ClientDispatcher
 
     /**
      * Route an update for the given session.
+     *
+     * Under Surge, "mtproto.surge.isolation" decides how state is reset between updates:
+     * "sandbox" runs each update in a fresh application sandbox, one update at a time;
+     * "concurrent" keeps updates concurrent and flushes the state once none is running.
      */
     public function dispatch(ClientKernel $kernel, TLObject $update, string $type, string $session): void
     {
+        $flusher = $this->flusher();
+
+        if ($flusher === null) {
+            $this->dispatchUpdate($kernel, $update, $type, $session);
+
+            return;
+        }
+
+        if (($this->app['config']['mtproto.surge.isolation'] ?? 'concurrent') === 'sandbox') {
+            $this->exclusively(fn () => $flusher->sandbox(function (Application $sandbox) use ($kernel, $update, $type, $session): void {
+                $listener = $kernel->getListener();
+
+                $kernel->setApplication($sandbox);
+                $listener->setContainer($sandbox);
+
+                try {
+                    $this->dispatchUpdate($kernel, $update, $type, $session);
+                } finally {
+                    $kernel->setApplication($this->app);
+                    $listener->setContainer($this->app);
+                }
+            }));
+
+            return;
+        }
+
+        $flusher->begin();
+
+        try {
+            $this->dispatchUpdate($kernel, $update, $type, $session);
+        } finally {
+            $flusher->flush();
+        }
+    }
+
+    /**
+     * Match and handle an update through the kernel.
+     */
+    protected function dispatchUpdate(ClientKernel $kernel, TLObject $update, string $type, string $session): void
+    {
         try {
             $updateData = $update->toArray();
+
+            $this->notifyReceived($updateData, $type, $session);
 
             $passes = [];
 
@@ -69,25 +123,65 @@ class ClientDispatcher
             }
         } catch (Throwable $e) {
             $this->logError($session, $type, $e);
-        } finally {
-            $this->flushState();
         }
     }
 
     /**
-     * Release leak-prone state after an update (Surge-hosted only).
+     * Dispatch the UpdateReceived event, isolated from matching: listeners receive a
+     * copy of the update and their exceptions never stop it from being dispatched.
+     *
+     * @param array<string, mixed> $updateData
      */
-    protected function flushState(): void
+    protected function notifyReceived(array $updateData, string $type, string $session): void
+    {
+        try {
+            $events = $this->app['events'];
+
+            if ($events->hasListeners(UpdateReceived::class)) {
+                $events->dispatch(new UpdateReceived($updateData, $type, $session));
+            }
+        } catch (Throwable $e) {
+            $this->logError($session, $type, $e);
+        }
+    }
+
+    /**
+     * Get the Surge state flusher (Surge-hosted only).
+     */
+    protected function flusher(): ?\LaraGram\Surge\Flusher
     {
         if ($this->flusher === null) {
-            if (!class_exists(\LaraGram\Surge\Flusher::class)) {
-                return;
+            if (!class_exists(\LaraGram\Surge\Flusher::class) || !$this->app->bound('surge')) {
+                return null;
             }
 
             $this->flusher = new \LaraGram\Surge\Flusher($this->app);
         }
 
-        $this->flusher->flush();
+        return $this->flusher;
+    }
+
+    /**
+     * Run the callback while no other update is being handled.
+     */
+    protected function exclusively(callable $callback): void
+    {
+        $runtime = $this->app->make(Runtime::class);
+
+        if (!$runtime->isSupported() || !$runtime->inCoroutine()) {
+            $callback();
+
+            return;
+        }
+
+        $this->lock ??= $runtime->channel(1);
+        $this->lock->push(true);
+
+        try {
+            $callback();
+        } finally {
+            $this->lock->pop();
+        }
     }
 
     /**

@@ -6,9 +6,12 @@ namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\Contracts\Foundation\Application;
 use LaraGram\MTProto\Auth\Authorization;
+use LaraGram\MTProto\Contracts\Invoker;
 use LaraGram\MTProto\Core\Client as MTProtoClient;
 use LaraGram\MTProto\Core\StoreRateLimiter;
 use LaraGram\MTProto\Core\TokenBucketRateLimiter;
+use LaraGram\MTProto\Rpc\LocalInvoker;
+use LaraGram\MTProto\Rpc\RemoteInvoker;
 
 class ClientManager
 {
@@ -25,6 +28,11 @@ class ClientManager
      * @var array<string, Authorization>
      */
     protected array $authorizations = [];
+
+    /**
+     * Whether this process runs the pump that owns the session connections.
+     */
+    protected static bool $ownsSessions = false;
 
     public function __construct(Application $app)
     {
@@ -91,6 +99,63 @@ class ClientManager
         $this->clients[$session] = $client;
 
         return $client;
+    }
+
+    /**
+     * Get an invoker for the given session.
+     *
+     * When the MTProto pump runs in another process (e.g. a Surge process) and serves
+     * RPC, calls are forwarded to it instead of opening a second connection on the
+     * same session. Otherwise the calls run on this process' client.
+     */
+    public function invoker(string $session = 'default'): Invoker
+    {
+        if ($this->shouldInvokeRemotely()) {
+            return new RemoteInvoker(
+                $this->rpcSocket(),
+                $session,
+                (float)($this->app['config']['mtproto.rpc.timeout'] ?? 30),
+            );
+        }
+
+        return new LocalInvoker($this->client($session), $session);
+    }
+
+    /**
+     * Mark the current process as the owner of the session connections (the pump process).
+     */
+    public static function ownSessions(bool $owns = true): void
+    {
+        static::$ownsSessions = $owns;
+    }
+
+    /**
+     * Get the path of the local RPC socket served by the pump process.
+     */
+    public function rpcSocket(): string
+    {
+        $configured = $this->app['config']['mtproto.rpc.socket'] ?? null;
+
+        if (is_string($configured) && $configured !== '') {
+            return $configured;
+        }
+
+        $path = $this->app->storagePath('framework/mtproto-rpc.sock');
+
+        // Unix socket paths are limited to ~104 bytes on most systems.
+        return strlen($path) <= 100
+            ? $path
+            : rtrim(sys_get_temp_dir(), '/') . '/mtproto-rpc-' . md5($path) . '.sock';
+    }
+
+    /**
+     * Determine if calls should be forwarded to the pump process.
+     */
+    protected function shouldInvokeRemotely(): bool
+    {
+        return !static::$ownsSessions
+            && (bool)($this->app['config']['mtproto.rpc.enabled'] ?? true)
+            && file_exists($this->rpcSocket());
     }
 
     /**
