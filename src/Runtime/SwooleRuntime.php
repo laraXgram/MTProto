@@ -69,7 +69,12 @@ final class SwooleRuntime implements Runtime
 
     public function sleep(float $seconds): void
     {
-        \Swoole\Coroutine::sleep($seconds);
+        if ($seconds <= 0.0) {
+            return;
+        }
+
+        // Swoole rejects (and does not sleep for) timers below 1ms.
+        \Swoole\Coroutine::sleep(max(0.001, $seconds));
     }
 
     public function table(string $name, int $rows = 1024, int $valueSize = 8192): Table

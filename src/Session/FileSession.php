@@ -316,7 +316,18 @@ class FileSession implements SessionInterface
     public function setTimeDelta(int $delta): void
     {
         $this->timeDelta = $delta;
+        // A new time base: msg_ids restart from the corrected clock.
+        $this->lastMsgId = 0;
         $this->save();
+    }
+
+    /**
+     * Move the content-related message counter (bad_msg_notification 32/33:
+     * seqno too low/high). Positive to skip ahead, negative to step back.
+     */
+    public function shiftSeqNo(int $contentMessages): void
+    {
+        $this->seqNoCounter = max(0, $this->seqNoCounter + $contentMessages);
     }
 
     /**

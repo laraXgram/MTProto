@@ -1202,7 +1202,7 @@ class Client
             }
         }
 
-        return null;
+        return \LaraGram\MTProto\Support\StderrLogger::fromEnvironment();
     }
 
     /**
@@ -1437,14 +1437,19 @@ class Client
 
     /**
      * Reconnect strategy handed to the pump: open a fresh TCP socket to the
-     * current DC (reusing the existing auth key), reset the session id so the
-     * seqno restarts, and return the new connection for the reader to adopt.
+     * current DC (reusing the existing auth key) and return it for the reader
+     * to adopt. The MTProto session (id, seqno, salt) survives TCP reconnects,
+     * so the server can redeliver answers to calls sent on the old socket.
      */
     private function reconnectForPump(): ConnectionInterface
     {
+        try {
+            $this->connection->disconnect();
+        } catch (\Throwable) {
+        }
+
         $this->connection = $this->makeConnection();
         $this->connectTcp();
-        $this->session->regenerateSessionId();
 
         return $this->connection;
     }
