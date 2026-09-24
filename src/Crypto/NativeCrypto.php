@@ -301,8 +301,12 @@ class NativeCrypto implements CryptoInterface
     {
         $x = $outgoing ? 0 : 8;
 
-        // msg_key = middle 128 bits of SHA256(substr(auth_key, 88+x, 32) + plaintext)
-        $hash = $this->sha256(substr($authKey, 88 + $x, 32) . $plaintext);
+        // msg_key = middle 128 bits of SHA256(substr(auth_key, 88+x, 32) + plaintext),
+        // hashed incrementally so a 1 MiB plaintext is never copied into a concatenation.
+        $context = hash_init('sha256');
+        hash_update($context, substr($authKey, 88 + $x, 32));
+        hash_update($context, $plaintext);
+        $hash = hash_final($context, true);
 
         return substr($hash, 8, 16);
     }

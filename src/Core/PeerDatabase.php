@@ -304,6 +304,12 @@ class PeerDatabase
 
     private function putEntry(int $id, array $entry): void
     {
+        // Most responses repeat peers we already hold - skip the re-index and
+        // the full re-serialisation on the next save().
+        if (($this->peers[$id] ?? null) === $entry) {
+            return;
+        }
+
         if (isset($this->peers[$id])) {
             $old = $this->peers[$id];
             if (!empty($old['username'])) {
