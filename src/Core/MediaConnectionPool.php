@@ -83,7 +83,7 @@ final class MediaConnectionPool
                     $socket->startPump();
                 } else {
                     $auth = $exportAuth();
-                    $socket = $this->home->cloneForDc($dcId, ['use_pump' => true]);
+                    $socket = $this->home->cloneForDc($dcId, ['use_pump' => true, 'media' => true]);
                     $socket->connect("media.dc{$dcId}." . count($existing));
                     $socket->startPump();
                     $socket->invokeRaw('auth.importAuthorization', [

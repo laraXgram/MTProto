@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\MTProto\Core\Client;
+use LaraGram\MTProto\Transfer\ParallelTransfer;
 use LaraGram\MTProto\Exceptions\MTProtoException;
 use LaraGram\MTProto\TL\TLObject;
 
@@ -30,10 +31,10 @@ class FileDecoder
     protected \LaraGram\Filesystem\Filesystem $files;
 
     /**
-     * Max concurrent chunk fetches. 1 = serial (default, preserves the legacy
+     * Max concurrent chunk fetches (default 4). 1 = serial (the legacy
      * behaviour). Raise via {@see withConcurrency()} to parallelise downloads.
      */
-    private int $concurrency = 1;
+    private int $concurrency = self::DEFAULT_CONCURRENCY;
 
     public bool $precise = true;
 
@@ -447,12 +448,11 @@ class FileDecoder
     }
 
     /**
-     * Fetch every chunk of a known-size file concurrently (bounded by
-     * {@see $concurrency}) and hand them to $sink IN ORDER (0,1,2,…). A dedicated
-     * producer coroutine keeps at most $concurrency fetches in flight; this
-     * (consumer) coroutine reorders out-of-order arrivals and emits contiguous
-     * chunks, so $sink is always called sequentially and may safely own a file
-     * handle. Returns total bytes emitted.
+     * Fetch every chunk of a known-size file concurrently through
+     * {@see ParallelTransfer} and hand them to $sink IN ORDER (0,1,2,…). A
+     * single consumer coroutine reorders arrivals and owns the sink, so $sink
+     * is always called sequentially and may safely own a file handle.
+     * Returns total bytes emitted.
      *
      * @param callable(int $index, string $bytes): void $sink
      * @throws MTProtoException
@@ -460,14 +460,15 @@ class FileDecoder
     private function downloadChunksInOrder(array $location, int $dcId, int $size, callable $sink): int
     {
         $runtime = $this->client->getRuntime();
+        $logger = $this->client->getLogger();
         $chunkSize = self::CHUNK_SIZE;
         $total = (int) ceil($size / $chunkSize);
-        $concurrency = min($this->concurrency, $total);
+        $window = min($this->concurrency, $total);
 
         try {
             $conns = $this->client->mediaSockets($dcId);
         } catch (\Throwable $e) {
-            $this->client->getLogger()?->warning("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
+            $logger?->warning("media sockets unavailable for DC{$dcId}, using single connection: {$e->getMessage()}");
             $conns = [$this->client->pool()->connection($dcId)];
         }
 
@@ -479,109 +480,89 @@ class FileDecoder
             $conns = $concurrent;
         } else {
             $conns = [$conns[0]];
-            $concurrency = 1;
-            $this->client->getLogger()?->warning(
-                "FileDecoder: no concurrent-capable socket for DC{$dcId} - download collapsed to SERIAL (throughput will be poor)"
-            );
+            $window = 1;
+            $logger?->warning("FileDecoder: no concurrent-capable socket for DC{$dcId} - download collapsed to SERIAL (throughput will be poor)");
         }
-        $socketCount = count($conns);
 
-        $distinctKeys = count(array_unique(array_map(
-            static fn (Client $c): string => md5($c->getSession()->getAuthKey() ?? ''),
-            $conns,
-        )));
+        $logger?->info("FileDecoder: parallel download DC{$dcId} - " . count($conns) . " socket(s), window {$window}, {$total} chunk(s)");
 
-        $this->client->getLogger()?->info(
-            "FileDecoder: parallel download DC{$dcId} - {$socketCount} socket(s), {$distinctKeys} auth key(s), window {$concurrency}, {$total} chunk(s)"
-        );
-
-        $tokens = $runtime->channel($concurrency);
-        $results = $runtime->channel($concurrency);
-        $errors = [];
+        $transfer = new ParallelTransfer($runtime, $conns, $window, $logger);
         $written = 0;
+        $error = null;
 
-        $runtime->run(function () use ($runtime, $location, $dcId, $chunkSize, $total, $tokens, $results, &$errors, &$written, $sink, $size, $conns, $socketCount): void {
-            // Producer: spawn fetches, capped at $concurrency in flight.
-            $runtime->spawn(function () use ($runtime, $location, $dcId, $chunkSize, $total, $tokens, $results, &$errors, $conns, $socketCount): void {
-                for ($i = 0; $i < $total; $i++) {
-                    $tokens->push(true);
-                    $offset = $i * $chunkSize;
+        $runtime->run(function () use ($runtime, $transfer, $location, $dcId, $chunkSize, $total, $size, $sink, &$written, &$error): void {
+            $results = $runtime->channel($total);
+            $consumed = $runtime->channel(1);
 
-                    $runtime->spawn(function () use ($runtime, $i, $conns, $socketCount, $location, $dcId, $offset, $chunkSize, $tokens, $results, &$errors): void {
-                        $bytes = '';
-                        try {
-                            // A socket mid-reconnect must not kill the whole
-                            // transfer - fail the chunk over to a sibling.
-                            for ($attempt = 0; ; $attempt++) {
-                                $conn = $conns[($i + $attempt) % $socketCount];
-                                try {
-                                    $chunk = $this->getFileChunkOn($conn, $dcId, $location, $offset, $chunkSize);
-                                    $bytes = $chunk['bytes'] ?? '';
-                                    break;
-                                } catch (\Throwable $e) {
-                                    if ($attempt >= 2) {
-                                        throw $e;
-                                    }
-                                    $runtime->sleep(0.5 * ($attempt + 1));
-                                }
-                            }
-                        } catch (\Throwable $e) {
-                            $errors[$i] = $e;
-                        } finally {
-                            $tokens->pop();
+            // Consumer: reorder arrivals and emit contiguous chunks in order.
+            $runtime->spawn(function () use ($results, $consumed, $chunkSize, $size, $sink, &$written, &$error): void {
+                $pending = [];
+                $next = 0;
+                while (($item = $results->pop()) !== false && $item !== null) {
+                    [$idx, $bytes] = $item;
+                    $pending[$idx] = $bytes;
+
+                    while ($error === null && array_key_exists($next, $pending)) {
+                        $b = $pending[$next];
+                        unset($pending[$next]);
+
+                        // Trim the final chunk to the exact file size, and
+                        // refuse short chunks - they would corrupt the file.
+                        $chunkOffset = $next * $chunkSize;
+                        if (($chunkOffset + strlen($b)) > $size) {
+                            $b = substr($b, 0, $size - $chunkOffset);
                         }
-                        $results->push([$i, $bytes]);
-                    });
+                        $expected = min($chunkSize, $size - $chunkOffset);
+                        if (strlen($b) !== $expected) {
+                            $error = new MTProtoException("Short chunk at offset {$chunkOffset}: got " . strlen($b) . " of {$expected} bytes");
+                            break;
+                        }
+
+                        try {
+                            $sink($next, $b);
+                        } catch (\Throwable $e) {
+                            $error = $e;
+                            break;
+                        }
+                        $written += strlen($b);
+                        $next++;
+                    }
                 }
+                $consumed->push(true);
             });
 
-            // Consumer: reorder arrivals, emit contiguous chunks in order.
-            $pending = [];
-            $next = 0;
-            for ($received = 0; $received < $total; $received++) {
-                [$idx, $bytes] = $results->pop();
-                $pending[$idx] = $bytes;
+            try {
+                $transfer->run(
+                    $total,
+                    function (int $index, Client $conn) use ($dcId, $location, $chunkSize, &$error): string {
+                        if ($error !== null) {
+                            throw $error; // the consumer failed - stop fetching
+                        }
 
-                while (array_key_exists($next, $pending)) {
-                    $b = $pending[$next];
-                    unset($pending[$next]);
-
-                    // Trim the final chunk to the exact file size.
-                    $chunkOffset = $next * $chunkSize;
-                    if ($size > 0 && ($chunkOffset + strlen($b)) > $size) {
-                        $b = substr($b, 0, $size - $chunkOffset);
-                    }
-
-                    // Integrity: every chunk must be exactly as long as expected
-                    // (offsets are pre-computed at CHUNK_SIZE stride). A short
-                    // chunk would silently corrupt the file - fail loudly instead.
-                    $expected = min($chunkSize, $size - $chunkOffset);
-                    if (strlen($b) !== $expected && !isset($errors[$next])) {
-                        $errors[$next] = new MTProtoException(
-                            "Short chunk at offset {$chunkOffset}: got " . strlen($b) . " of {$expected} bytes"
-                        );
-                    }
-
-                    if ($b !== '') {
-                        $sink($next, $b);
-                        $written += strlen($b);
-                    }
-                    $next++;
-                }
+                        return $this->getFileChunkOn($conn, $dcId, $location, $index * $chunkSize, $chunkSize, raw: true)['bytes'] ?? '';
+                    },
+                    static function (int $index, string $bytes) use ($results): void {
+                        $results->push([$index, $bytes]);
+                    },
+                    static fn (): int => $chunkSize,
+                );
+            } catch (\Throwable $e) {
+                $error ??= $e;
+            } finally {
+                $results->push(null);
+                $consumed->pop();
+                $results->close();
+                $consumed->close();
             }
         });
 
-        $tokens->close();
-        $results->close();
+        if ($error !== null) {
+            throw $error instanceof MTProtoException ? $error : new MTProtoException($error->getMessage(), 0, $error);
+        }
 
-        if ($errors !== []) {
-            ksort($errors);
-            $first = reset($errors);
-            throw new MTProtoException(
-                'Parallel download failed on chunk ' . array_key_first($errors) . ': ' . $first->getMessage(),
-                0,
-                $first,
-            );
+        $stats = $transfer->stats();
+        if ($stats['retries'] > 0) {
+            $logger?->info("FileDecoder: {$stats['parts']} chunk(s), {$stats['retries']} retried, {$stats['floods']} flood wait(s)");
         }
 
         return $written;
@@ -609,17 +590,17 @@ class FileDecoder
      * @return array{_: string, type: array, mtime: int, bytes: string}
      * @throws MTProtoException
      */
-    protected function getFileChunkOn(Client $conn, int $dcId, array $location, int $offset, int $limit): array
+    protected function getFileChunkOn(Client $conn, int $dcId, array $location, int $offset, int $limit, bool $raw = false): array
     {
         try {
-            $result = $this->fetchChunk($conn, $location, $offset, $limit);
+            $result = $this->fetchChunk($conn, $location, $offset, $limit, $raw);
         } catch (MTProtoException $e) {
             $msg = $e->getMessage();
 
             if ($dcId > 0 && $dcId !== $this->client->getDcId()
                 && str_contains($msg, 'AUTH_KEY_UNREGISTERED')) {
                 $this->client->pool()->ensureAuthorized($dcId);
-                $result = $this->fetchChunk($conn, $location, $offset, $limit);
+                $result = $this->fetchChunk($conn, $location, $offset, $limit, $raw);
             } elseif (str_contains($msg, 'FILE_REFERENCE_EXPIRED') || str_contains($msg, 'FILE_REFERENCE_INVALID')) {
                 throw new MTProtoException(
                     'File reference expired - re-fetch the source message (getMessages) to obtain a fresh '
@@ -640,9 +621,10 @@ class FileDecoder
     }
 
     /**
-     * Fetch one chunk over a specific (possibly cross-DC) connection.
+     * Fetch one chunk over a specific (possibly cross-DC) connection. `$raw`
+     * skips the client's own retries - the parallel engine retries instead.
      */
-    private function fetchChunk(Client $conn, array $location, int $offset, int $limit): mixed
+    private function fetchChunk(Client $conn, array $location, int $offset, int $limit, bool $raw = false): mixed
     {
         $params = [
             'location' => $location,
@@ -653,7 +635,7 @@ class FileDecoder
             $params['precise'] = true;
         }
 
-        return $conn->invoke('upload.getFile', $params);
+        return $raw ? $conn->invokeTransfer('upload.getFile', $params) : $conn->invoke('upload.getFile', $params);
     }
 
     /**

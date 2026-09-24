@@ -146,6 +146,8 @@ class Client
      * @type bool $flood_sleep Auto-sleep & retry on FLOOD_WAIT (default true)
      * @type int $flood_sleep_limit Max FLOOD_WAIT seconds to wait before rethrowing (default 60)
      * @type int $max_retries Max retries for transient/migrate errors (default 5)
+     * @type array $dc_addresses Per-DC endpoint overrides: [dcId => 'host:port'|[host, port]]
+     * @type bool $media Connect to the DC's media-only endpoint when known (media sockets)
      * @type ConnectionInterface $connection Custom connection driver
      * @type TransportInterface $transport Custom transport
      * @type CryptoInterface $crypto Custom crypto
@@ -489,6 +491,7 @@ class Client
         $opts['session_dir'] = $this->sessionDir;
         $opts['use_pump'] = true;
         $opts['auto_migrate'] = false;
+        $opts['media'] = true;
 
         $store = new \LaraGram\MTProto\Store\ArrayStore();
         $store->put('media', json_encode([
@@ -918,6 +921,30 @@ class Client
         }
 
         return 'application/octet-stream';
+    }
+
+    /**
+     * Single-shot call for file transfer parts: no rate limiting, parameter
+     * preprocessing, peer caching or retries - every failure is thrown so the
+     * transfer engine ({@see \LaraGram\MTProto\Transfer\ParallelTransfer}) can
+     * decide how to retry (another socket, the server's flood wait, ...).
+     *
+     * @internal
+     */
+    public function invokeTransfer(string $method, array $params): mixed
+    {
+        $this->ensureConnected();
+
+        $result = ($this->pump !== null && $this->pump->isRunning())
+            ? $this->pump->invoke($method, $params)
+            : $this->getRpc()->invoke($method, $params);
+
+        if (is_array($result) && isset($result['_'])) {
+            if ($result['_'] === 'boolTrue') return true;
+            if ($result['_'] === 'boolFalse') return false;
+        }
+
+        return $result;
     }
 
     public function invokeRaw(string $method, array $params = []): mixed
@@ -1430,7 +1457,7 @@ class Client
 
         $pump = $this->getPump();
         $pump->start();
-        $pump->initializeConnection();
+        DcOptions::remember($pump->initializeConnection(), $this->testMode);
 
         return $pump;
     }
@@ -1462,8 +1489,19 @@ class Client
         if ($this->proxy !== null) {
             $this->connection->connect($this->proxy->host(), $this->proxy->port(), $this->timeout);
         } else {
-            $addr = DataCenter::getAddress($this->dcId, $this->testMode, $this->ipv6);
-            $this->connection->connect($addr, DataCenter::DEFAULT_PORT, $this->timeout);
+            [$host, $port] = $this->endpoint($this->dcId);
+            try {
+                $this->connection->connect($host, $port, $this->timeout);
+            } catch (\Throwable $e) {
+                $fallback = [DataCenter::getAddress($this->dcId, $this->testMode, $this->ipv6), DataCenter::DEFAULT_PORT];
+                if ([$host, $port] === $fallback || isset($this->options['dc_addresses'][$this->dcId])) {
+                    throw $e;
+                }
+                // A media-only endpoint may be unreachable from here - use the main one.
+                $this->logger?->warning("DC{$this->dcId} media endpoint {$host}:{$port} failed ({$e->getMessage()}); using the default address");
+                $this->connection = $this->makeConnection();
+                $this->connection->connect($fallback[0], $fallback[1], $this->timeout);
+            }
         }
 
         if (!$this->obfuscated) {
@@ -1472,6 +1510,38 @@ class Client
                 $this->connection->send($init);
             }
         }
+    }
+
+    /**
+     * Host and port for a DC: an explicit `dc_addresses` override
+     * (`[dcId => 'host:port']` or `[dcId => [host, port]]`), else the built-in address.
+     *
+     * @return array{0: string, 1: int}
+     */
+    private function endpoint(int $dcId): array
+    {
+        $override = $this->options['dc_addresses'][$dcId] ?? null;
+
+        if (is_array($override) && isset($override[0])) {
+            return [(string)$override[0], (int)($override[1] ?? DataCenter::DEFAULT_PORT)];
+        }
+
+        if (is_string($override) && $override !== '') {
+            $port = DataCenter::DEFAULT_PORT;
+            if (preg_match('/^\[?(.+?)\]?:(\d+)$/', $override, $m)) {
+                [$override, $port] = [$m[1], (int)$m[2]];
+            }
+
+            return [$override, $port];
+        }
+
+        // Media sockets use the DC's media-only endpoint, like official clients.
+        if (!empty($this->options['media'])
+            && ($media = DcOptions::media($dcId, $this->testMode, $this->ipv6, $this->obfuscated)) !== null) {
+            return $media;
+        }
+
+        return [DataCenter::getAddress($dcId, $this->testMode, $this->ipv6), DataCenter::DEFAULT_PORT];
     }
 
     /**

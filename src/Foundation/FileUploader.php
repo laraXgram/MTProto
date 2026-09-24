@@ -6,6 +6,7 @@ namespace LaraGram\MTProto\Foundation;
 
 use LaraGram\Filesystem\Filesystem;
 use LaraGram\MTProto\Core\Client;
+use LaraGram\MTProto\Transfer\ParallelTransfer;
 use RuntimeException;
 
 final class FileUploader
@@ -23,10 +24,8 @@ final class FileUploader
     /**
      * Upper bound on parts. Telegram's real cap is the appConfig value
      * `upload_max_fileparts_default` (non-premium) / `_premium` - currently 4000
-     * / 8000. At the 512 KiB max part size that is ~2 GiB / ~4 GiB. The old
-     * hard-coded 4000 rejected any file above ~2 GiB even on accounts allowed to
-     * send it; 8000 matches the premium ceiling and the server still enforces
-     * the true per-account limit, surfacing a clean RPC error if exceeded.
+     * / 8000. At the 512 KiB max part size that is ~2 GiB / ~4 GiB. The server
+     * still enforces the true per-account limit, surfacing a clean RPC error.
      */
     public const MAX_PARTS = 8000;
 
@@ -57,21 +56,33 @@ final class FileUploader
     }
 
     /**
-     * Upload a file from a filesystem path.
+     * Upload a file from a filesystem path. Parts are read from disk as they
+     * are sent, so memory use stays flat for multi-gigabyte files.
      *
      * @param callable|null $progress fn(int $partsDone, int $partsTotal): void
      * @return array  An `inputFile` or `inputFileBig` TL constructor.
      */
     public function fromPath(string $path, ?string $fileName = null, ?callable $progress = null): array
     {
-        if (!$this->files->exists($path)) {
+        if (!is_file($path) || !is_readable($path)) {
             throw new RuntimeException("Upload source not found: {$path}");
         }
 
-        return $this->fromString(
-            $this->files->get($path),
+        clearstatcache(true, $path);
+
+        return $this->upload(
+            (int) filesize($path),
+            static function (int $offset, int $length) use ($path): string {
+                $bytes = file_get_contents($path, false, null, $offset, $length);
+                if ($bytes === false || strlen($bytes) !== $length) {
+                    throw new RuntimeException("Cannot read {$length} bytes at offset {$offset} of {$path}");
+                }
+
+                return $bytes;
+            },
             $fileName ?? $this->files->basename($path),
             $progress,
+            static fn (): string => (string) md5_file($path),
         );
     }
 
@@ -83,14 +94,27 @@ final class FileUploader
      */
     public function fromString(string $contents, string $fileName, ?callable $progress = null): array
     {
-        $size = strlen($contents);
+        return $this->upload(
+            strlen($contents),
+            static fn (int $offset, int $length): string => substr($contents, $offset, $length),
+            $fileName,
+            $progress,
+            static fn (): string => md5($contents),
+        );
+    }
 
+    /**
+     * @param callable(int $offset, int $length): string $read
+     * @param callable(): string $md5
+     */
+    private function upload(int $size, callable $read, string $fileName, ?callable $progress, callable $md5): array
+    {
         if ($size === 0) {
             throw new RuntimeException('Refusing to upload an empty file.');
         }
 
         $isBig = $size > self::BIG_FILE_THRESHOLD;
-        $totalParts = (int)max(1, (int)ceil($size / self::PART_SIZE));
+        $totalParts = (int) ceil($size / self::PART_SIZE);
 
         if ($totalParts > self::MAX_PARTS) {
             throw new RuntimeException(sprintf(
@@ -100,12 +124,16 @@ final class FileUploader
             ));
         }
 
-        $fileId = $this->randomFileId();
+        $fileId = random_int(PHP_INT_MIN, PHP_INT_MAX);
+        $part = static fn (int $index): string => $read($index * self::PART_SIZE, min(self::PART_SIZE, $size - $index * self::PART_SIZE));
 
         if ($totalParts > 1 && $this->concurrency > 1 && $this->client->supportsConcurrentInvoke()) {
-            $this->uploadParts($contents, $fileId, $totalParts, $isBig, $progress);
+            $this->uploadParallel($part, $fileId, $totalParts, $isBig, $size, $progress);
         } else {
-            $this->uploadPartsSerial($contents, $fileId, $totalParts, $isBig, $progress);
+            for ($index = 0; $index < $totalParts; $index++) {
+                $this->client->invoke(...$this->partCall($fileId, $index, $totalParts, $isBig, $part($index)));
+                $progress !== null && $progress($index + 1, $totalParts);
+            }
         }
 
         if ($isBig) {
@@ -122,139 +150,73 @@ final class FileUploader
             'id' => $fileId,
             'parts' => $totalParts,
             'name' => $fileName,
-            'md5_checksum' => md5($contents),
+            'md5_checksum' => $md5(),
         ];
     }
 
     /**
-     * Upload one part over the home connection. Serial path / single part.
+     * The upload.saveFilePart / saveBigFilePart call for one part.
+     *
+     * @return array{0: string, 1: array}
      */
-    private function uploadPart(string $chunk, int $fileId, int $part, int $totalParts, bool $isBig): void
+    private function partCall(int $fileId, int $index, int $totalParts, bool $isBig, string $bytes): array
     {
-        $this->uploadPartOn($this->client, $chunk, $fileId, $part, $totalParts, $isBig);
+        return $isBig
+            ? ['upload.saveBigFilePart', ['file_id' => $fileId, 'file_part' => $index, 'file_total_parts' => $totalParts, 'bytes' => $bytes]]
+            : ['upload.saveFilePart', ['file_id' => $fileId, 'file_part' => $index, 'bytes' => $bytes]];
     }
 
     /**
-     * Upload one part over an explicit connection (home or a media socket).
-     * Parts are keyed by file_id, so the server assembles them regardless of
-     * which same-DC socket each arrived on.
+     * Upload parts concurrently over the media sockets of the home DC. Parts
+     * are keyed by file_id, so the server assembles them whichever socket each
+     * one arrived on.
+     *
+     * @param callable(int $index): string $part
      */
-    private function uploadPartOn(Client $conn, string $chunk, int $fileId, int $part, int $totalParts, bool $isBig): void
+    private function uploadParallel(callable $part, int $fileId, int $totalParts, bool $isBig, int $size, ?callable $progress): void
     {
-        if ($isBig) {
-            $conn->invoke('upload.saveBigFilePart', [
-                'file_id' => $fileId,
-                'file_part' => $part,
-                'file_total_parts' => $totalParts,
-                'bytes' => $chunk,
-            ]);
-        } else {
-            $conn->invoke('upload.saveFilePart', [
-                'file_id' => $fileId,
-                'file_part' => $part,
-                'bytes' => $chunk,
-            ]);
-        }
-    }
+        $logger = $this->client->getLogger();
 
-    /**
-     * Sequential upload - one part after another (sync RPC path / single part).
-     */
-    private function uploadPartsSerial(string $contents, int $fileId, int $totalParts, bool $isBig, ?callable $progress): void
-    {
-        for ($part = 0; $part < $totalParts; $part++) {
-            $chunk = substr($contents, $part * self::PART_SIZE, self::PART_SIZE);
-            $this->uploadPart($chunk, $fileId, $part, $totalParts, $isBig);
-
-            if ($progress !== null) {
-                $progress($part + 1, $totalParts);
-            }
-        }
-    }
-
-    /**
-     * Concurrent upload.
-     */
-    private function uploadParts(string $contents, int $fileId, int $totalParts, bool $isBig, ?callable $progress): void
-    {
-        $runtime = $this->client->getRuntime();
-
-        // Spread parts over several media sockets to the home DC.
-        // Socket count comes from config (transfer.media_sockets); the in-flight
-        // window ($this->concurrency) is independent - depth >1 per socket hides RTT.
         try {
-            $conns = $this->client->mediaSockets($this->client->getDcId());
+            $sockets = $this->client->mediaSockets($this->client->getDcId());
         } catch (\Throwable $e) {
-            $this->client->getLogger()?->warning("FileUploader: media sockets unavailable, using single connection: {$e->getMessage()}");
-            $conns = [$this->client];
+            $logger?->warning("FileUploader: media sockets unavailable, using single connection: {$e->getMessage()}");
+            $sockets = [$this->client];
         }
-        $socketCount = count($conns);
+        $sockets = array_values(array_filter($sockets, static fn (Client $c): bool => $c->supportsConcurrentInvoke())) ?: [$this->client];
 
-        $this->client->getLogger()?->info(
-            "FileUploader: parallel upload - {$socketCount} socket(s), window {$this->concurrency}, {$totalParts} part(s)"
-        );
+        $logger?->info(sprintf(
+            'FileUploader: parallel upload - %d socket(s), window %d, %d part(s)',
+            count($sockets),
+            $this->concurrency,
+            $totalParts,
+        ));
 
-        $tokens = $runtime->channel($this->concurrency);
-        $done = $runtime->channel($totalParts);
-        $errors = [];
+        $transfer = new ParallelTransfer($this->client->getRuntime(), $sockets, $this->concurrency, $logger);
+        $done = 0;
 
-        $runtime->run(function () use ($runtime, $contents, $fileId, $totalParts, $isBig, $tokens, $done, &$errors, $conns, $socketCount) {
-            for ($part = 0; $part < $totalParts; $part++) {
-                $tokens->push(true);
-                $chunk = substr($contents, $part * self::PART_SIZE, self::PART_SIZE);
-
-                $runtime->spawn(function () use ($runtime, $conns, $socketCount, $chunk, $fileId, $part, $totalParts, $isBig, $tokens, $done, &$errors) {
-                    try {
-                        // A socket mid-reconnect must not kill the whole
-                        // upload - fail the part over to a sibling socket.
-                        for ($attempt = 0; ; $attempt++) {
-                            $conn = $conns[($part + $attempt) % $socketCount];
-                            try {
-                                $this->uploadPartOn($conn, $chunk, $fileId, $part, $totalParts, $isBig);
-                                break;
-                            } catch (\Throwable $e) {
-                                if ($attempt >= 2) {
-                                    throw $e;
-                                }
-                                $runtime->sleep(0.5 * ($attempt + 1));
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        $errors[$part] = $e;
-                    } finally {
-                        $tokens->pop();
-                        $done->push(true);
+        $this->client->getRuntime()->run(function () use ($transfer, $part, $fileId, $totalParts, $isBig, $size, $progress, &$done): void {
+            $transfer->run(
+                $totalParts,
+                function (int $index, Client $socket) use ($part, $fileId, $totalParts, $isBig) {
+                    $result = $socket->invokeTransfer(...$this->partCall($fileId, $index, $totalParts, $isBig, $part($index)));
+                    if ($result !== true) {
+                        throw new RuntimeException('RPC_CALL_FAIL: part ' . $index . ' was not saved (server returned false)');
                     }
-                });
-            }
 
-            for ($i = 0; $i < $totalParts; $i++) {
-                $done->pop();
-            }
+                    return $result;
+                },
+                static function () use ($progress, $totalParts, &$done): void {
+                    $done++;
+                    $progress !== null && $progress($done, $totalParts);
+                },
+                static fn (int $index): int => min(self::PART_SIZE, $size - $index * self::PART_SIZE),
+            );
         });
 
-        $tokens->close();
-        $done->close();
-
-        if ($errors !== []) {
-            ksort($errors);
-            throw new RuntimeException(
-                'Parallel upload failed on part ' . array_key_first($errors) . ': ' . reset($errors)->getMessage(),
-                0,
-                reset($errors),
-            );
+        $stats = $transfer->stats();
+        if ($stats['retries'] > 0) {
+            $logger?->info("FileUploader: {$stats['parts']} part(s), {$stats['retries']} retried, {$stats['floods']} flood wait(s)");
         }
-
-        if ($progress !== null) {
-            $progress($totalParts, $totalParts);
-        }
-    }
-
-    /**
-     * Random signed 64-bit file id (the handle Telegram uses to assemble parts).
-     */
-    private function randomFileId(): int
-    {
-        return random_int(PHP_INT_MIN, PHP_INT_MAX);
     }
 }
