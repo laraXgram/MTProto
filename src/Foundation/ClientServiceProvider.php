@@ -211,6 +211,7 @@ class ClientServiceProvider extends ServiceProvider
                 \LaraGram\MTProto\Console\ClientExportCommand::class,
                 \LaraGram\MTProto\Console\ClientCompileCommand::class,
                 \LaraGram\MTProto\Console\ClientSchemaPublishCommand::class,
+                \LaraGram\MTProto\Console\ClientBenchmarkCommand::class,
             ]);
         }
     }
