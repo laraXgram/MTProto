@@ -130,8 +130,14 @@ class Client
     /** Lazily-built per-DC media socket pool for parallel transfer. */
     private ?MediaConnectionPool $mediaPool = null;
 
-    /** Portable session blob (see {@see authString}/{@see decodeAuthString}), if given. */
+    /** Portable session string (see {@see authString()} / {@see AuthString}), if given. */
     private ?string $authString = null;
+
+    /** Encrypts session state at rest and decrypts encrypted auth strings, when a session key is set. */
+    private ?\LaraGram\Encryption\Encrypter $sessionEncrypter = null;
+
+    /** Exclusive lock on the session (see {@see lockSession()}). */
+    private ?\LaraGram\MTProto\Session\SessionLock $sessionLock = null;
 
     /**
      * @param int $apiId Telegram API ID
@@ -148,6 +154,10 @@ class Client
      * @type int $max_retries Max retries for transient/migrate errors (default 5)
      * @type array $dc_addresses Per-DC endpoint overrides: [dcId => 'host:port'|[host, port]]
      * @type bool $media Connect to the DC's media-only endpoint when known (media sockets)
+     * @type bool $lock Hold an exclusive per-session lock while connected (default true)
+     * @type float $lock_wait Seconds to wait for another process to release the session (default 5)
+     * @type string $auth_string Portable session string to log in with (see {@see authString()})
+     * @type string $session_key Encrypt session state at rest (and decrypt encrypted auth strings)
      * @type ConnectionInterface $connection Custom connection driver
      * @type TransportInterface $transport Custom transport
      * @type CryptoInterface $crypto Custom crypto
@@ -201,6 +211,13 @@ class Client
         $this->authString = is_string($options['auth_string'] ?? null) && $options['auth_string'] !== ''
             ? $options['auth_string']
             : null;
+
+        if (is_string($options['session_key'] ?? null) && $options['session_key'] !== '') {
+            $this->sessionEncrypter = \LaraGram\MTProto\Store\EncryptedStore::encrypter($options['session_key']);
+            $this->peerStore = $this->encryptStore($this->peerStore, '.peers');
+            $this->sessionStore = $this->encryptStore($this->sessionStore, '.session');
+            $this->stateStore = $this->encryptStore($this->stateStore, '_updates.json');
+        }
 
         if ($this->proxy !== null) {
             $this->obfuscated = true;
@@ -261,6 +278,16 @@ class Client
         $this->freshAuthKey = false;
 
         $this->files->ensureDirectoryExists($this->sessionDir, 0700);
+
+        if (($this->options['lock'] ?? true) !== false) {
+            $this->sessionLock?->release();
+            $this->sessionLock = \LaraGram\MTProto\Session\SessionLock::acquire(
+                $this->sessionDir,
+                $sessionName,
+                (float) ($this->options['lock_wait'] ?? 5.0),
+            );
+        }
+
         $this->session = $this->makeSession($sessionName);
 
         $storedDc = $this->session->getDcId();
@@ -323,6 +350,9 @@ class Client
         $this->paramPreprocessor = null;
         $this->resetNamespaces();
         $this->connected = false;
+
+        $this->sessionLock?->release();
+        $this->sessionLock = null;
     }
 
     /**
@@ -460,6 +490,7 @@ class Client
         $opts['session_store'] = new \LaraGram\MTProto\Store\ArrayStore();
 
         $opts['auto_migrate'] = false;
+        $opts['lock'] = false;
 
         return new self($this->apiId, $this->apiHash, array_merge($opts, $overrides));
     }
@@ -492,6 +523,7 @@ class Client
         $opts['use_pump'] = true;
         $opts['auto_migrate'] = false;
         $opts['media'] = true;
+        $opts['lock'] = false;
 
         $store = new \LaraGram\MTProto\Store\ArrayStore();
         $store->put('media', json_encode([
@@ -1120,97 +1152,118 @@ class Client
         return $this->stateStore;
     }
 
+    /**
+     * Wrap a state store (or the default file store for it) so its values are
+     * encrypted at rest.
+     */
+    private function encryptStore(?\LaraGram\MTProto\Contracts\Store $store, string $extension): \LaraGram\MTProto\Contracts\Store
+    {
+        if ($store instanceof \LaraGram\MTProto\Store\EncryptedStore) {
+            return $store;
+        }
+
+        return new \LaraGram\MTProto\Store\EncryptedStore(
+            $store ?? new \LaraGram\MTProto\Store\FileStore($this->sessionDir, $extension, $this->files),
+            $this->sessionEncrypter,
+        );
+    }
+
     private function makeSession(string $name): SessionInterface
     {
         $session = $this->sessionStore !== null
             ? new \LaraGram\MTProto\Session\StoreSession($name, $this->sessionStore)
             : new FileSession($name, $this->sessionDir, $this->files);
 
-        if ($this->authString !== null && $session->getAuthKey() === null) {
-            $this->seedSessionFromAuthString($session, $this->authString);
+        if ($this->authString !== null) {
+            $this->seedSessionFromAuthString($session);
         }
 
         return $session;
     }
 
     /**
-     * Seed a fresh session with a portable auth blob (see {@see authString}),
-     * skipping the DH handshake and any login RPC entirely on connect().
+     * Seed the session from the auth string, skipping the DH handshake and any
+     * login call on connect(). The string is the source of truth for its own
+     * DC: a stored key for that DC that differs from it (the string was
+     * replaced) is overwritten; a key on another DC (a later DC migration) is kept.
      */
-    private function seedSessionFromAuthString(SessionInterface $session, string $authString): void
+    private function seedSessionFromAuthString(SessionInterface $session): void
     {
-        $decoded = self::decodeAuthString($authString);
+        $decoded = \LaraGram\MTProto\Session\AuthString::decode($this->authString, $this->sessionEncrypter);
+        $stored = $session->getAuthKey();
 
-        $session->setAuthKey($decoded['auth_key']);
-        if ($decoded['server_salt'] !== null) {
-            $session->setServerSalt($decoded['server_salt']);
+        if ($stored === $decoded->authKey || ($stored !== null && $session->getDcId() !== $decoded->dcId)) {
+            return;
         }
-        $session->setDcId($decoded['dc_id']);
-        $session->setTimeDelta($decoded['time_delta']);
+
+        $session->setAuthKey($decoded->authKey);
+        if ($decoded->serverSalt !== null) {
+            $session->setServerSalt($decoded->serverSalt);
+        }
+        $session->setDcId($decoded->dcId);
+        $session->setTimeDelta($decoded->timeDelta);
     }
 
     /**
-     * Export the CURRENT (connected) session as a portable string: DC id, auth
-     * key, server salt and time delta, base64-of-JSON. Hand this to
-     * `auth_string` on a later Client to skip both the DH handshake and any
-     * login call entirely.
-     *
-     * Deliberately excludes session_id/seq_no: those are per-TCP-connection and
-     * are freshly regenerated by connect() whenever an auth key is already
-     * present, so carrying them over would be both useless and stale.
+     * Open a session's stored state through the configured (possibly encrypted)
+     * stores - no network, no lock. For tools that read or write a session
+     * while it is offline or owned by another process.
      */
-    public function authString(): string
+    public function openSession(string $name): SessionInterface
+    {
+        $this->files->ensureDirectoryExists($this->sessionDir, 0700);
+
+        return $this->sessionStore !== null
+            ? new \LaraGram\MTProto\Session\StoreSession($name, $this->sessionStore)
+            : new FileSession($name, $this->sessionDir, $this->files);
+    }
+
+    /**
+     * The key session state is encrypted with, if any.
+     */
+    public function getSessionEncrypter(): ?\LaraGram\Encryption\Encrypter
+    {
+        return $this->sessionEncrypter;
+    }
+
+    /**
+     * Export the current session as a portable single-line string - hand it to
+     * the `auth_string` option (or CLIENT_AUTH_STRING) of a later client to skip
+     * the DH handshake and any login entirely.
+     *
+     * @param string $format `laragram` (default), `telethon` or `pyrogram`
+     * @param \LaraGram\Encryption\Encrypter|null $encrypter encrypt the LaraGram
+     *        format (defaults to the client's session key when `$encrypt` is true)
+     */
+    public function authString(string $format = 'laragram', bool $encrypt = false, ?\LaraGram\Encryption\Encrypter $encrypter = null): string
     {
         $authKey = $this->session->getAuthKey();
         if ($authKey === null) {
             throw new MTProtoException('No auth key on this session yet - connect() and authenticate first.');
         }
 
-        $salt = $this->session->getServerSalt();
-
-        return base64_encode(json_encode([
-            'v' => 1,
-            'dc_id' => $this->session->getDcId(),
-            'auth_key' => base64_encode($authKey),
-            'server_salt' => $salt !== null ? base64_encode($salt) : null,
-            'time_delta' => $this->session->getTimeDelta(),
-        ]));
-    }
-
-    /**
-     * @return array{dc_id: int, auth_key: string, server_salt: ?string, time_delta: int}
-     */
-    private static function decodeAuthString(string $authString): array
-    {
-        $json = base64_decode($authString, true);
-        $data = $json !== false ? json_decode($json, true) : null;
-
-        if (!is_array($data) || !isset($data['dc_id'], $data['auth_key'])) {
-            throw new MTProtoException('Malformed auth_string.');
+        $encrypter ??= $encrypt ? $this->sessionEncrypter : null;
+        if ($encrypt && $encrypter === null) {
+            throw new MTProtoException('Encrypting an auth string needs a session key (the session_key option / CLIENT_SESSION_KEY).');
         }
 
-        $dcId = (int)$data['dc_id'];
-        if (!DataCenter::isValidDcId($dcId)) {
-            throw new MTProtoException("auth_string has invalid dc_id: {$dcId}");
+        $me = [];
+        if ($this->connected) {
+            try {
+                $me = $this->getMe();
+            } catch (\Throwable) {
+                // Not authorized yet (or offline) - export without the user id.
+            }
         }
 
-        $authKey = base64_decode((string)$data['auth_key'], true);
-        if ($authKey === false || $authKey === '') {
-            throw new MTProtoException('auth_string has a malformed auth_key.');
-        }
-
-        $salt = null;
-        if (!empty($data['server_salt'])) {
-            $decodedSalt = base64_decode((string)$data['server_salt'], true);
-            $salt = $decodedSalt !== false ? $decodedSalt : null;
-        }
-
-        return [
-            'dc_id' => $dcId,
-            'auth_key' => $authKey,
-            'server_salt' => $salt,
-            'time_delta' => (int)($data['time_delta'] ?? 0),
-        ];
+        return (new \LaraGram\MTProto\Session\AuthString(
+            dcId: $this->session->getDcId(),
+            authKey: $authKey,
+            userId: isset($me['id']) ? (int) $me['id'] : null,
+            isBot: !empty($me['bot']),
+            testMode: $this->testMode,
+            apiId: $this->apiId,
+        ))->encode($format, $encrypter);
     }
 
     private function ensureConnected(): void
@@ -1562,6 +1615,23 @@ class Client
         $this->session->setServerSalt($result['server_salt']);
         $this->session->setDcId($this->dcId);
         $this->session->setTimeDelta($result['time_delta']);
+    }
+
+    /**
+     * Keep secrets (API hash, auth string, session key, auth key) out of
+     * var_dump()/print_r()/dump() output.
+     */
+    public function __debugInfo(): array
+    {
+        return [
+            'api_id' => $this->apiId,
+            'dc_id' => $this->dcId,
+            'session' => $this->sessionName,
+            'connected' => $this->connected,
+            'layer' => $this->layer,
+            'pump' => $this->pump?->isRunning() ?? false,
+            'encrypted_state' => $this->sessionEncrypter !== null,
+        ];
     }
 
     public function __destruct()

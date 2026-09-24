@@ -14,6 +14,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Auth String
+    |--------------------------------------------------------------------------
+    |
+    | Log the default session in with a portable session string instead of a
+    | session file: no handshake, no login, nothing to copy between servers.
+    | Export one with `php laragram client:auth-string`. LaraGram, Telethon /
+    | GramJS and Pyrogram strings are accepted; encrypted LaraGram strings
+    | (`lg2e:`) need the session key below. Other sessions take their own
+    | string from `sessions.<name>.auth_string`.
+    |
+    | The string IS the account - keep it in secrets, never in the repository.
+    |
+    */
+    'auth_string' => env('CLIENT_AUTH_STRING'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Sessions (multi-account)
     |--------------------------------------------------------------------------
     |
@@ -210,13 +227,25 @@ return [
     |
     | driver: Session storage driver ("file", "database", "redis")
     | path: For file driver, where to store sessions
-    | name: Default session name
+    | name: Default session name (the one CLIENT_AUTH_STRING logs in)
     |
     */
     'session' => [
         'driver' => env('CLIENT_SESSION_DRIVER', 'swoole-table'),
         'path' => env('CLIENT_SESSION_PATH', storage_path('app/clients/sessions')),
         'name' => env('CLIENT_SESSION_NAME', 'default'),
+
+        // One process per session: a second process connecting the same
+        // session fails fast instead of getting the auth key revoked.
+        'lock' => env('CLIENT_SESSION_LOCK', true),
+
+        // Encrypt session state at rest (auth key, peer access hashes, update
+        // state) in every store driver. key: CLIENT_SESSION_KEY, else APP_KEY.
+        // Existing plain-text sessions are encrypted on their next write.
+        'encryption' => [
+            'enabled' => env('CLIENT_SESSION_ENCRYPT', false),
+            'key' => env('CLIENT_SESSION_KEY'),
+        ],
     ],
 
     /*

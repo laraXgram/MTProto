@@ -71,6 +71,7 @@ class PeerDatabase
             return;
         }
 
+        \LaraGram\MTProto\Store\EncryptedStore::refuseIfEncrypted($json, "peer database of session '{$this->storeKey}'");
         $data = json_decode($json, true);
         if (!is_array($data)) {
             return;

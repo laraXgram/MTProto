@@ -92,6 +92,9 @@ class ClientManager
             'logger' => $this->app['mtproto.logger'] ?? null,
             'files' => $this->app['files'] ?? null,
             'runtime' => $runtime,
+            'auth_string' => $this->authString($session),
+            'session_key' => $this->sessionKey($config),
+            'lock' => filter_var($config['session']['lock'] ?? true, FILTER_VALIDATE_BOOLEAN),
         ];
 
         $client = new MTProtoClient($apiId, $apiHash, $options);
@@ -196,6 +199,10 @@ class ClientManager
      */
     public function sessionExists(string $session = 'default'): bool
     {
+        if ($this->authString($session) !== null) {
+            return true;
+        }
+
         $config = $this->sessionConfig($session);
         $dir = $this->resolveSessionPath($config);
         $file = rtrim($dir, '/') . '/' . $session . '.session';
@@ -212,11 +219,29 @@ class ClientManager
         $dir = $this->resolveSessionPath($config);
         $file = rtrim($dir, '/') . '/' . $session . '.session';
 
+        if ($this->authString($session) !== null) {
+            return true;
+        }
+
         if (!file_exists($file)) {
             return false;
         }
 
-        $data = json_decode(file_get_contents($file), true);
+        $content = (string) file_get_contents($file);
+        if (str_starts_with($content, \LaraGram\MTProto\Store\EncryptedStore::PREFIX)) {
+            $key = $this->sessionKey($config);
+            if ($key === null) {
+                return true; // encrypted: never mistake it for "no session" and overwrite it
+            }
+            try {
+                $content = \LaraGram\MTProto\Store\EncryptedStore::encrypter($key)
+                    ->decryptString(substr($content, strlen(\LaraGram\MTProto\Store\EncryptedStore::PREFIX)));
+            } catch (\Throwable) {
+                return true;
+            }
+        }
+
+        $data = json_decode($content, true);
 
         return is_array($data) && !empty($data['auth_key']);
     }
@@ -298,7 +323,15 @@ class ClientManager
             }
         }
 
-        return $sessions;
+        // Sessions that log in with an auth string need no file at all.
+        $config = $this->app['config']['mtproto'] ?? [];
+        foreach (array_merge([(string) ($config['session']['name'] ?? 'default')], array_keys((array) ($config['sessions'] ?? []))) as $name) {
+            if ($this->authString((string) $name) !== null) {
+                $sessions[] = (string) $name;
+            }
+        }
+
+        return array_values(array_unique($sessions));
     }
 
     /**
@@ -316,6 +349,43 @@ class ClientManager
         return is_array($override) && $override !== []
             ? array_replace_recursive($base, $override)
             : $base;
+    }
+
+    /**
+     * The auth string a session logs in with: its own
+     * `sessions.<name>.auth_string`, or the global one for the default session.
+     */
+    public function authString(string $session): ?string
+    {
+        $config = $this->app['config']['mtproto'] ?? [];
+
+        $string = $config['sessions'][$session]['auth_string'] ?? null;
+        if ($string === null && $session === (string) ($config['session']['name'] ?? 'default')) {
+            $string = $config['auth_string'] ?? null;
+        }
+
+        return is_string($string) && trim($string) !== '' ? trim($string) : null;
+    }
+
+    /**
+     * The key session state is encrypted with, or null when encryption is off.
+     */
+    protected function sessionKey(array $config): ?string
+    {
+        $encryption = (array) ($config['session']['encryption'] ?? []);
+
+        if (!filter_var($encryption['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            return null;
+        }
+
+        $key = $encryption['key'] ?? null;
+        $key = is_string($key) && $key !== '' ? $key : ($this->app['config']['app.key'] ?? null);
+
+        if (!is_string($key) || $key === '') {
+            throw new \RuntimeException('Session encryption is enabled but neither CLIENT_SESSION_KEY nor APP_KEY is set.');
+        }
+
+        return $key;
     }
 
     /**

@@ -10,15 +10,30 @@ namespace LaraGram\MTProto\Console\Concerns;
 trait ManagesSessionArtifacts
 {
     /**
-     * On-disk artifacts that hold secret material and must be encrypted at rest:
-     *   - .session : permanent auth key + server salt + session id
-     *   - .peers   : peer access hashes (needed to message any resolved peer)
+     * On-disk session artifacts, encrypted at rest when encryption is on:
+     *   - .session      : permanent auth key + server salt + session id
+     *   - .peers        : peer access hashes (needed to message any resolved peer)
+     *   - _updates.json : update state (pts/qts/seq)
      *
      * @return list<string>
      */
     protected function sensitiveExtensions(): array
     {
-        return ['.session', '.peers'];
+        return ['.session', '.peers', '_updates.json'];
+    }
+
+    /**
+     * The session key: --key, else mtproto.session.encryption.key, else APP_KEY.
+     */
+    protected function configuredKey(): ?string
+    {
+        foreach ([$this->option('key'), config('mtproto.session.encryption.key'), config('app.key')] as $key) {
+            if (is_string($key) && $key !== '') {
+                return $key;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -37,18 +52,6 @@ trait ManagesSessionArtifacts
         }
 
         return $path;
-    }
-
-    /**
-     * Strip the optional `base64:` prefix from a user-supplied key.
-     */
-    protected function parseKey(string $key): string
-    {
-        if (str_starts_with($key, 'base64:')) {
-            return (string) base64_decode(substr($key, 7));
-        }
-
-        return $key;
     }
 
     /**
