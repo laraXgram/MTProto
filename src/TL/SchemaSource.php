@@ -32,7 +32,7 @@ final class SchemaSource
      * The layer of the bundled schema - the fallback when a schema has no
      * `// LAYER N` marker and nothing was compiled yet.
      */
-    public const DEFAULT_LAYER = 228;
+    public const DEFAULT_LAYER = 229;
 
     /**
      * The schemas bundled with the package.
