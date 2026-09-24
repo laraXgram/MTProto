@@ -330,16 +330,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | API Layer
+    | API Layer & TL Schema
     |--------------------------------------------------------------------------
     |
-    | Telegram API layer version. MUST match the compiled TL schema + Generated
-    | types (currently 228). Do not raise this without regenerating both the
-    | .tl schema and the Generated/Types together (php bin/compile-tl.php) — the
-    | server would otherwise reply with constructors the deserializer cannot parse.
+    | layer: null (recommended) = the layer the Generated classes were compiled
+    | from (the "// LAYER N" marker of the schema). Only set it to force another
+    | layer, and only together with a schema compiled for that layer - the
+    | server would otherwise reply with constructors the parser cannot read.
+    |
+    | schema.path: where `php laragram client:schema:publish` copies the .tl
+    | files so you can edit them (e.g. to run your own layer). When the API
+    | schema exists there, `php laragram client:compile` compiles it instead of
+    | the package copy.
     |
     */
-    'layer' => 228,
+    'layer' => env('CLIENT_LAYER'),
+
+    'schema' => [
+        'path' => env('CLIENT_SCHEMA_PATH', resource_path('mtproto/schemas')),
+    ],
 
     /*
     |--------------------------------------------------------------------------

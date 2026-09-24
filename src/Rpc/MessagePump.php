@@ -65,7 +65,7 @@ final class MessagePump
 
     private int $apiId;
     private string $apiHash;
-    private int $layer = 228;
+    private int $layer = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
 
     /** Device fingerprint sent at connection init. Defaults to a realistic preset. */
     private ?DeviceProfile $deviceProfile = null;

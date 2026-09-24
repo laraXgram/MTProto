@@ -8,6 +8,7 @@ use LaraGram\Console\Command;
 use LaraGram\MTProto\Foundation\ClientDispatcher;
 use LaraGram\MTProto\Foundation\ClientKernel;
 use LaraGram\MTProto\Foundation\ClientManager;
+use LaraGram\MTProto\TL\SchemaSource;
 use LaraGram\MTProto\TL\TLObject;
 use LaraGram\MTProto\Updates\PumpLoop;
 
@@ -26,6 +27,10 @@ class ClientStartCommand extends Command
     {
         /** @var ClientManager $manager */
         $manager = $this->laragram['mtproto.manager'];
+
+        if (($stale = SchemaSource::staleReason(config('mtproto.schema.path'))) !== null) {
+            $this->components->warn($stale);
+        }
 
         $sessions = $this->resolveSessions();
 

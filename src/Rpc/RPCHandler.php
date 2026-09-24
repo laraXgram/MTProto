@@ -39,7 +39,7 @@ final class RPCHandler
     private array $pendingAcks = [];
 
     /** @var int Current layer (overridden by Client::LAYER; must match parsed schema/types) */
-    private int $layer = 228;
+    private int $layer = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
 
     /** @var bool Whether connection has been initialized */
     private bool $initialized = false;

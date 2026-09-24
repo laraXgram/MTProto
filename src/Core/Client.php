@@ -72,7 +72,7 @@ class Client
     use HandlesEphemeral;
 
     public const VERSION = '0.3.0';
-    public const LAYER = 228;
+    public const LAYER = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
 
     private ConnectionInterface $connection;
     private TransportInterface $transport;
@@ -142,7 +142,7 @@ class Client
      * @type bool $ipv6 Use IPv6
      * @type float $timeout Connection timeout
      * @type string $session_dir Directory for session files
-     * @type int $layer MTProto API layer (default Client::LAYER; must match compiled schema)
+     * @type int $layer MTProto API layer (default: the compiled layer, {@see compiledLayer()})
      * @type bool $flood_sleep Auto-sleep & retry on FLOOD_WAIT (default true)
      * @type int $flood_sleep_limit Max FLOOD_WAIT seconds to wait before rethrowing (default 60)
      * @type int $max_retries Max retries for transient/migrate errors (default 5)
@@ -170,7 +170,7 @@ class Client
         $this->ipv6 = $options['ipv6'] ?? false;
         $this->timeout = $options['timeout'] ?? 10.0;
         $this->sessionDir = $options['session_dir'] ?? './sessions';
-        $this->layer = (int)($options['layer'] ?? self::LAYER);
+        $this->layer = (int)($options['layer'] ?? self::compiledLayer());
         $this->floodSleep = (bool)($options['flood_sleep'] ?? true);
         $this->floodSleepLimit = (int)($options['flood_sleep_limit'] ?? 60);
         $this->maxRetries = (int)($options['max_retries'] ?? 5);
@@ -1369,22 +1369,22 @@ class Client
     }
 
     /**
-     * Parse the MTProto + API TL schemas once into the shared TLParser.
+     * Attach the process-wide TL schema (parsed once, shared by every client).
      */
     private function ensureTlParser(): void
     {
-        if ($this->tlParser !== null) {
-            return;
-        }
+        $this->tlParser ??= TLParser::shared();
+    }
 
-        $this->tlParser = new TLParser($this->files);
-        $schemasDir = __DIR__ . '/../TL/schemas';
-        foreach (['mtproto_api.tl', 'telegram_api.tl', 'mtproto_ext.tl'] as $file) {
-            $path = $schemasDir . '/' . $file;
-            if (file_exists($path)) {
-                $this->tlParser->parseFile($path);
-            }
-        }
+    /**
+     * The API layer the Generated classes were compiled for - the layer sent
+     * in invokeWithLayer unless a client is given an explicit `layer` option.
+     */
+    public static function compiledLayer(): int
+    {
+        return class_exists(\LaraGram\MTProto\Generated\Layer::class)
+            ? \LaraGram\MTProto\Generated\Layer::VERSION
+            : self::LAYER;
     }
 
     /**

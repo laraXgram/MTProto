@@ -79,7 +79,7 @@ class ClientManager
             'test_mode' => (bool)($config['test_mode'] ?? false),
             'timeout' => (float)($config['connection']['timeout'] ?? 10),
             'session_dir' => $this->resolveSessionPath($config),
-            'layer' => (int)($config['layer'] ?? MTProtoClient::LAYER),
+            'layer' => is_numeric($config['layer'] ?? null) ? (int)$config['layer'] : null,
             'flood_sleep' => (bool)($config['flood_sleep'] ?? true),
             'flood_sleep_limit' => (int)($config['flood_sleep_limit'] ?? 60),
             'max_retries' => (int)($config['connection']['retry_count'] ?? 5),
