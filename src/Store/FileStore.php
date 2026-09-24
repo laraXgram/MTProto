@@ -37,7 +37,9 @@ final class FileStore implements Store
 
     public function put(string $key, string $value): void
     {
-        $this->files->replace($this->path($key), $value);
+        // Session state is secret material (auth keys, peer access hashes):
+        // atomic replace, readable by the owner only.
+        $this->files->replace($this->path($key), $value, 0600);
     }
 
     public function has(string $key): bool
