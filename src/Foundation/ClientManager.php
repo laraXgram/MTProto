@@ -55,7 +55,7 @@ class ClientManager
 
         if ($apiId === 0 || $apiHash === '') {
             throw new \RuntimeException(
-                'MTProto API credentials not configured. Set TELEGRAM_API_ID and TELEGRAM_API_HASH in .env'
+                "MTProto API credentials not configured for session '{$session}'. Set API_ID and API_HASH in .env (or mtproto.sessions.{$session}.api_id/api_hash)."
             );
         }
 
