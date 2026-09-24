@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace LaraGram\MTProto\RPC;
+namespace LaraGram\MTProto\Rpc;
 
 use LaraGram\MTProto\Contracts\CryptoInterface;
 use LaraGram\MTProto\Contracts\SessionInterface;
