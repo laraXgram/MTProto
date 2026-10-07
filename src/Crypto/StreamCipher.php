@@ -9,7 +9,6 @@ use LaraGram\MTProto\Contracts\CryptoInterface;
 final class StreamCipher
 {
     private const BLOCK = 16;
-    private const ZERO_BLOCK = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
     private CryptoInterface $crypto;
     private string $key;
@@ -36,6 +35,10 @@ final class StreamCipher
 
     /**
      * XOR the data with the next keystream bytes (encrypt == decrypt for CTR).
+     *
+     * The keystream is produced in bulk by one AES-CTR call per chunk (the
+     * data itself, zero-padded to a block boundary, is encrypted from the
+     * current counter); the padding's output is the carried-over keystream.
      */
     public function process(string $data): string
     {
@@ -44,44 +47,44 @@ final class StreamCipher
             return '';
         }
 
-        // Top up the keystream buffer to cover the requested length.
-        while (strlen($this->keystream) < $len) {
-            $this->keystream .= $this->nextBlock();
+        // Consume keystream left over from the previous call first.
+        $have = strlen($this->keystream);
+        if ($have > 0) {
+            $take = min($have, $len);
+            $head = substr($data, 0, $take) ^ substr($this->keystream, 0, $take);
+            $this->keystream = (string) substr($this->keystream, $take);
+
+            return $take === $len ? $head : $head . $this->process(substr($data, $take));
         }
 
-        $out = $data ^ substr($this->keystream, 0, $len);
-        $this->keystream = substr($this->keystream, $len);
+        $blocks = intdiv($len + self::BLOCK - 1, self::BLOCK);
+        $pad = $blocks * self::BLOCK - $len;
 
-        return $out;
+        $out = $this->crypto->aesCtr($pad === 0 ? $data : $data . str_repeat("\0", $pad), $this->key, $this->counter);
+        $this->counter = self::add($this->counter, $blocks);
+
+        if ($pad === 0) {
+            return $out;
+        }
+
+        $this->keystream = substr($out, $len);
+
+        return substr($out, 0, $len);
     }
 
     /**
-     * Produce one 16-byte keystream block for the current counter and advance.
-     *
-     * Encrypting a zero block under CTR yields exactly the keystream block for
-     * that counter value; feeding only 16 bytes keeps the backend on block 0.
+     * Add $blocks to a 16-byte big-endian counter (wraps like openssl CTR).
      */
-    private function nextBlock(): string
+    private static function add(string $counter, int $blocks): string
     {
-        $block = $this->crypto->aesCtr(self::ZERO_BLOCK, $this->key, $this->counter);
-        $this->counter = self::increment($this->counter);
+        $words = array_values(unpack('N4', $counter));
 
-        return $block;
-    }
-
-    /**
-     * Increment a 16-byte big-endian counter by one (matches openssl CTR).
-     */
-    private static function increment(string $counter): string
-    {
-        for ($i = self::BLOCK - 1; $i >= 0; $i--) {
-            $byte = (ord($counter[$i]) + 1) & 0xff;
-            $counter[$i] = chr($byte);
-            if ($byte !== 0) {
-                break; // no carry
-            }
+        for ($i = 3; $i >= 0 && $blocks > 0; $i--) {
+            $sum = $words[$i] + $blocks;
+            $words[$i] = $sum & 0xFFFFFFFF;
+            $blocks = $sum >> 32;
         }
 
-        return $counter;
+        return pack('N4', ...$words);
     }
 }

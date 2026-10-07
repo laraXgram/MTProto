@@ -129,6 +129,10 @@ class ClientServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__ . '/../../config/mtproto.php' => $this->app->configPath('mtproto.php'),
         ], 'mtproto-config');
+
+        $this->publishes([
+            \LaraGram\MTProto\TL\SchemaSource::packagePath() => $this->app->resourcePath('mtproto/schemas'),
+        ], 'mtproto-schemas');
     }
 
     /**
@@ -205,6 +209,10 @@ class ClientServiceProvider extends ServiceProvider
                 \LaraGram\MTProto\Console\SessionDecryptCommand::class,
                 \LaraGram\MTProto\Console\SessionListCommand::class,
                 \LaraGram\MTProto\Console\ClientExportCommand::class,
+                \LaraGram\MTProto\Console\ClientCompileCommand::class,
+                \LaraGram\MTProto\Console\ClientSchemaPublishCommand::class,
+                \LaraGram\MTProto\Console\ClientBenchmarkCommand::class,
+                \LaraGram\MTProto\Console\ClientAuthStringCommand::class,
             ]);
         }
     }

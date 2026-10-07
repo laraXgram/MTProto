@@ -211,7 +211,10 @@ class ParamPreprocessor
                 }
 
                 if (is_array($v) && !$this->isAlreadyTLObject($v)) {
-                    $params[$name] = \LaraGram\MTProto\Foundation\ReplyMarkup::toTl($v);
+                    $params[$name] = \LaraGram\MTProto\Foundation\ReplyMarkup::toTl(
+                        $v,
+                        fn (int|string $user): array => $this->resolver->resolveInputUser($user),
+                    );
                 } else {
                     $params[$name] = $v;
                 }

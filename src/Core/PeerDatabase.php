@@ -71,6 +71,7 @@ class PeerDatabase
             return;
         }
 
+        \LaraGram\MTProto\Store\EncryptedStore::refuseIfEncrypted($json, "peer database of session '{$this->storeKey}'");
         $data = json_decode($json, true);
         if (!is_array($data)) {
             return;
@@ -304,6 +305,12 @@ class PeerDatabase
 
     private function putEntry(int $id, array $entry): void
     {
+        // Most responses repeat peers we already hold - skip the re-index and
+        // the full re-serialisation on the next save().
+        if (($this->peers[$id] ?? null) === $entry) {
+            return;
+        }
+
         if (isset($this->peers[$id])) {
             $old = $this->peers[$id];
             if (!empty($old['username'])) {

@@ -7,7 +7,7 @@ namespace LaraGram\MTProto\Runtime\Contracts;
 /**
  * A coroutine-safe, bounded, blocking queue.
  *
- * Used by {@see \LaraGram\MTProto\RPC\MessagePump} both as a per-call result
+ * Used by {@see \LaraGram\MTProto\Rpc\MessagePump} both as a per-call result
  * mailbox and as a single-token write mutex. The concrete implementation is
  * runtime-specific ({@see \LaraGram\MTProto\Runtime\SwooleChannel}); nothing in
  * Core touches the underlying coroutine extension directly (RULE 1).

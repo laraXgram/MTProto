@@ -14,6 +14,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Auth String
+    |--------------------------------------------------------------------------
+    |
+    | Log the default session in with a portable session string instead of a
+    | session file: no handshake, no login, nothing to copy between servers.
+    | Export one with `php laragram client:auth-string`. LaraGram, Telethon /
+    | GramJS and Pyrogram strings are accepted; encrypted LaraGram strings
+    | (`lg2e:`) need the session key below. Other sessions take their own
+    | string from `sessions.<name>.auth_string`.
+    |
+    | The string IS the account - keep it in secrets, never in the repository.
+    |
+    */
+    'auth_string' => env('CLIENT_AUTH_STRING'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Sessions (multi-account)
     |--------------------------------------------------------------------------
     |
@@ -210,13 +227,25 @@ return [
     |
     | driver: Session storage driver ("file", "database", "redis")
     | path: For file driver, where to store sessions
-    | name: Default session name
+    | name: Default session name (the one CLIENT_AUTH_STRING logs in)
     |
     */
     'session' => [
         'driver' => env('CLIENT_SESSION_DRIVER', 'swoole-table'),
         'path' => env('CLIENT_SESSION_PATH', storage_path('app/clients/sessions')),
         'name' => env('CLIENT_SESSION_NAME', 'default'),
+
+        // One process per session: a second process connecting the same
+        // session fails fast instead of getting the auth key revoked.
+        'lock' => env('CLIENT_SESSION_LOCK', true),
+
+        // Encrypt session state at rest (auth key, peer access hashes, update
+        // state) in every store driver. key: CLIENT_SESSION_KEY, else APP_KEY.
+        // Existing plain-text sessions are encrypted on their next write.
+        'encryption' => [
+            'enabled' => env('CLIENT_SESSION_ENCRYPT', false),
+            'key' => env('CLIENT_SESSION_KEY'),
+        ],
     ],
 
     /*
@@ -330,16 +359,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | API Layer
+    | API Layer & TL Schema
     |--------------------------------------------------------------------------
     |
-    | Telegram API layer version. MUST match the compiled TL schema + Generated
-    | types (currently 228). Do not raise this without regenerating both the
-    | .tl schema and the Generated/Types together (php bin/compile-tl.php) — the
-    | server would otherwise reply with constructors the deserializer cannot parse.
+    | layer: null (recommended) = the layer the Generated classes were compiled
+    | from (the "// LAYER N" marker of the schema). Only set it to force another
+    | layer, and only together with a schema compiled for that layer - the
+    | server would otherwise reply with constructors the parser cannot read.
+    |
+    | schema.path: where `php laragram client:schema:publish` copies the .tl
+    | files so you can edit them (e.g. to run your own layer). When the API
+    | schema exists there, `php laragram client:compile` compiles it instead of
+    | the package copy.
     |
     */
-    'layer' => 228,
+    'layer' => env('CLIENT_LAYER'),
+
+    'schema' => [
+        'path' => env('CLIENT_SCHEMA_PATH', resource_path('mtproto/schemas')),
+    ],
 
     /*
     |--------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace LaraGram\MTProto\RPC;
+namespace LaraGram\MTProto\Rpc;
 
 use LaraGram\MTProto\Contracts\ConnectionInterface;
 use LaraGram\MTProto\Contracts\TransportInterface;
@@ -65,7 +65,7 @@ final class MessagePump
 
     private int $apiId;
     private string $apiHash;
-    private int $layer = 228;
+    private int $layer = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
 
     /** Device fingerprint sent at connection init. Defaults to a realistic preset. */
     private ?DeviceProfile $deviceProfile = null;
@@ -88,7 +88,38 @@ final class MessagePump
         'resends' => 0,
         'timeouts' => 0,
         'rpc_errors' => 0,
+        'bad_msgs' => 0,
+        'flood_waits' => 0,
     ];
+
+    /**
+     * Why things went wrong: RPC error types ("420 FLOOD_WAIT_X"), bad_msg
+     * codes and reconnect reasons, each with a count. Exposed via getStats().
+     *
+     * @var array{rpc_error_types: array<string, int>, bad_msg_codes: array<int, int>, reconnect_reasons: array<string, int>}
+     */
+    private array $diagnostics = [
+        'rpc_error_types' => [],
+        'bad_msg_codes' => [],
+        'reconnect_reasons' => [],
+    ];
+
+    /**
+     * Seconds a call sent before a reconnect waits for the server to redeliver
+     * its answer on the resumed session before it is resent. Self-tuning: it
+     * drops to 0 after two reconnects in a row without any redelivery.
+     */
+    private float $redeliveryGrace = 0.5;
+
+    /** @var array<int, true> msg_ids in flight at the last reconnect */
+    private array $awaitingRedelivery = [];
+
+    private int $redelivered = 0;
+
+    private int $graceMisses = 0;
+
+    /** Last time a seqno correction was applied (32/33 arrive in bursts). */
+    private float $lastSeqShift = 0.0;
 
     public function __construct(
         private ConnectionInterface         $connection,
@@ -215,13 +246,18 @@ final class MessagePump
      */
     private function failPending(MTProtoException $error): void
     {
+        $calls = [];
         foreach ($this->pending as $call) {
+            $calls[spl_object_id($call)] = $call;
+        }
+        $this->pending = [];
+
+        foreach ($calls as $call) {
             try {
                 $call->channel->push(['_pump_error' => $error]);
             } catch (\Throwable) {
             }
         }
-        $this->pending = [];
     }
 
     public function isRunning(): bool
@@ -230,13 +266,15 @@ final class MessagePump
     }
 
     /**
-     * Cumulative transfer diagnostics (frames/bytes in+out, errors, reconnects).
+     * Cumulative transfer diagnostics: integer counters (frames/bytes in+out,
+     * errors, resends, reconnects, bad_msgs, flood_waits) plus the
+     * `rpc_error_types`, `bad_msg_codes` and `reconnect_reasons` breakdowns.
      *
-     * @return array<string, int>
+     * @return array<string, int|array<string|int, int>>
      */
     public function getStats(): array
     {
-        return $this->stats;
+        return $this->stats + $this->diagnostics;
     }
 
     /**
@@ -325,20 +363,34 @@ final class MessagePump
         $channel = $this->runtime->channel(1);
 
         [$msgId, $packet] = $this->codec->encrypt($payload, $contentRelated);
-        $this->pending[$msgId] = new PendingCall(
+        $call = new PendingCall(
             channel: $channel,
             payload: $payload,
             contentRelated: $contentRelated,
             method: $method,
         );
+        $call->ids[] = $msgId;
+        $this->pending[$msgId] = $call;
         $this->stats['frames_out']++;
         $this->stats['bytes_out'] += strlen($packet);
-        $this->withWriteLock(fn() => $this->connection->send($packet));
+
+        try {
+            $this->withWriteLock(fn() => $this->connection->send($packet));
+        } catch (\Throwable $e) {
+            if (!$this->running) {
+                $this->forget($call);
+                throw $e;
+            }
+            // The link is dying: the reader reconnects and replays this call
+            // (immediately, since it never reached the server) - keep waiting.
+            $call->sent = false;
+            $this->logger?->debug("Pump send of {$method} failed ({$e->getMessage()}); waiting for reconnect replay");
+        }
 
         $boxed = $channel->pop($timeout);
 
         if ($boxed === false) {
-            unset($this->pending[$msgId]);
+            $this->forget($call);
             $this->stats['timeouts']++;
             throw new MTProtoException("Timeout waiting for response to {$method} ({$msgId})");
         }
@@ -404,7 +456,7 @@ final class MessagePump
                 if (!$this->running) {
                     break;
                 }
-                $this->reconnect();
+                $this->reconnect('socket closed while idle');
             } catch (\Throwable $e) {
                 if (!$this->running) {
                     break;
@@ -416,7 +468,7 @@ final class MessagePump
                     $this->connection->disconnect();
                 } catch (\Throwable) {
                 }
-                $this->reconnect();
+                $this->reconnect((new \ReflectionClass($e))->getShortName() . ': ' . self::normalise($e->getMessage()));
             }
         }
     }
@@ -499,7 +551,7 @@ final class MessagePump
             self::RPC_RESULT => $this->handleRpcResult($body),
             self::MSGS_ACK => $this->handleMsgsAck($body),
             self::BAD_MSG_NOTIFICATION,
-            self::BAD_SERVER_SALT => $this->handleBadMsg($body),
+            self::BAD_SERVER_SALT => $this->handleBadMsg($msgId, $body),
             self::NEW_SESSION_CREATED => $this->handleNewSession($body),
             self::PONG => $this->handlePong($body),
             self::FUTURE_SALTS => $this->handleFutureSalts($body),
@@ -562,6 +614,16 @@ final class MessagePump
         if ($constructorId === self::RPC_ERROR) {
             $this->stats['rpc_errors']++;
             $error = $this->serializer->deserialize($resultData);
+            $type = ($error['error_code'] ?? 0) . ' ' . self::normalise((string) ($error['error_message'] ?? ''));
+            $this->diagnostics['rpc_error_types'][$type] = ($this->diagnostics['rpc_error_types'][$type] ?? 0) + 1;
+            if (str_contains((string) ($error['error_message'] ?? ''), 'FLOOD')) {
+                $this->stats['flood_waits']++;
+            }
+            $this->logger?->debug(sprintf(
+                'Pump rpc_error %s for %s',
+                trim(($error['error_code'] ?? '') . ' ' . ($error['error_message'] ?? '')),
+                $this->pending[$reqMsgId]->method ?? 'unknown call',
+            ));
             $this->resolve($reqMsgId, [
                 '_pump_error' => new MTProtoException(
                     "RPC Error {$error['error_code']}: {$error['error_message']}",
@@ -583,8 +645,21 @@ final class MessagePump
         if ($call === null) {
             return; // late/duplicate response - nothing waiting
         }
-        unset($this->pending[$reqMsgId]);
+        if (isset($this->awaitingRedelivery[$reqMsgId])) {
+            $this->redelivered++;
+        }
+        $this->forget($call);
         $call->channel->push($boxed);
+    }
+
+    /**
+     * Drop every msg_id a call is known under (it may have been resent).
+     */
+    private function forget(PendingCall $call): void
+    {
+        foreach ($call->ids as $id) {
+            unset($this->pending[$id]);
+        }
     }
 
     /**
@@ -602,44 +677,105 @@ final class MessagePump
     }
 
     /**
-     * bad_server_salt / bad_msg_notification. For a stale salt we update it and
-     * transparently resend the offending payload under a fresh msg_id, re-keying
-     * its pending entry so the original invoke() still gets its answer.
+     * bad_server_salt / bad_msg_notification: correct what the server
+     * complains about, then resend the call under a fresh msg_id so the
+     * original invoke() still gets its answer.
+     *
+     *  16/17  msg_id too low/high  -> sync the clock from the server msg_id
+     *  32/33  seqno too low/high   -> shift the seqno counter
+     *  48     bad server salt      -> adopt new_server_salt
+     *  18/19/20/34/35/64           -> plain resend (fresh msg_id/seqno)
      */
-    private function handleBadMsg(string $data): void
+    private function handleBadMsg(int $serverMsgId, string $data): void
     {
         $badMsg = $this->serializer->deserialize($data);
-        $errorCode = $badMsg['error_code'] ?? 0;
-        $badMsgId = $badMsg['bad_msg_id'] ?? 0;
+        $errorCode = (int) ($badMsg['error_code'] ?? 0);
+        $badMsgId = (int) ($badMsg['bad_msg_id'] ?? 0);
+
+        $this->stats['bad_msgs']++;
+        $this->diagnostics['bad_msg_codes'][$errorCode] = ($this->diagnostics['bad_msg_codes'][$errorCode] ?? 0) + 1;
 
         if (isset($badMsg['new_server_salt'])) {
             $this->session->setServerSalt(pack('P', $badMsg['new_server_salt']));
         }
 
-        // 48 = incorrect server salt -> resend with corrected salt.
-        if ($errorCode === 48) {
-            $this->resend($badMsgId);
-            return;
+        switch ($errorCode) {
+            case 16:
+            case 17:
+                $delta = ($serverMsgId >> 32) - time();
+                if ($delta !== $this->session->getTimeDelta()) {
+                    $this->session->setTimeDelta($delta);
+                    $this->logger?->info("Pump clock corrected by server (bad_msg {$errorCode}): time delta {$delta}s");
+                }
+                break;
+            case 32:
+            case 33:
+                $this->shiftSeqNo($errorCode === 32 ? 32 : -8);
+                break;
+            case 18:
+            case 19:
+            case 20:
+            case 34:
+            case 35:
+            case 48:
+            case 64:
+                break;
+            default:
+                $this->resolve($badMsgId, [
+                    '_pump_error' => new MTProtoException("Bad message notification: code {$errorCode}", $errorCode),
+                ]);
+                return;
         }
 
-        // Everything else: surface as an error to the waiting caller.
-        $this->resolve($badMsgId, [
-            '_pump_error' => new MTProtoException("Bad message notification: code {$errorCode}", $errorCode),
-        ]);
+        $this->resend($badMsgId, keepAlias: false);
+    }
+
+    /**
+     * Apply a seqno correction at most once per second - a burst of 32/33
+     * notifications for calls sent together describes the same drift.
+     */
+    private function shiftSeqNo(int $contentMessages): void
+    {
+        $now = microtime(true);
+        if ($now - $this->lastSeqShift < 1.0) {
+            return;
+        }
+        $this->lastSeqShift = $now;
+
+        if (method_exists($this->session, 'shiftSeqNo')) {
+            $this->session->shiftSeqNo($contentMessages);
+        } else {
+            $this->session->regenerateSessionId();
+        }
     }
 
     /**
      * Re-send a pending call's payload under a new msg_id and re-key it.
+     *
+     * @param bool $keepAlias keep answering to the old msg_id too - after a
+     *        reconnect the server may still redeliver the original answer
      */
-    private function resend(int $oldMsgId): void
+    private function resend(int $oldMsgId, bool $keepAlias = true): void
     {
         $call = $this->pending[$oldMsgId] ?? null;
         if ($call === null) {
             return;
         }
-        unset($this->pending[$oldMsgId]);
+
+        // Rejections (bad_msg) loop only so often; reconnect replays never give up.
+        if (!$keepAlias && ++$call->resends > 5) {
+            $this->resolve($oldMsgId, ['_pump_error' => new MTProtoException("{$call->method} rejected after 5 resends")]);
+            return;
+        }
+
+        if (!$keepAlias) {
+            unset($this->pending[$oldMsgId]);
+            $call->ids = array_values(array_diff($call->ids, [$oldMsgId]));
+        }
 
         [$newMsgId, $packet] = $this->codec->encrypt($call->payload, $call->contentRelated);
+        $call->ids[] = $newMsgId;
+        $call->sent = true;
         $this->pending[$newMsgId] = $call;
         $this->stats['resends']++;
         $this->stats['frames_out']++;
@@ -760,30 +896,37 @@ final class MessagePump
     }
 
     /**
-     * EOF recovery: back off, re-handshake via the injected reconnector, then
-     * replay every unanswered call and ask for the missed difference.
+     * EOF recovery: re-open the link on the SAME MTProto session (the server
+     * keeps it across TCP connections, so no new_session/salt churn), then
+     * replay unanswered calls. Calls that never reached the server go out at
+     * once; calls that did get {@see $redeliveryGrace} seconds for the server
+     * to redeliver their answer before they are resent - otherwise a dropped
+     * link would download every in-flight file part twice.
      */
-    private function reconnect(): void
+    private function reconnect(string $reason = 'unknown'): void
     {
+        $this->diagnostics['reconnect_reasons'][$reason] = ($this->diagnostics['reconnect_reasons'][$reason] ?? 0) + 1;
+
         if ($this->reconnector === null) {
-            $this->logger?->error('Pump connection lost and no reconnector set - stopping');
+            $this->logger?->error("Pump connection lost ({$reason}) and no reconnector set - stopping");
             $this->running = false;
             return;
         }
 
+        $this->logger?->info("Pump reconnecting: {$reason}");
+
         for ($attempt = 1; $attempt <= 5; $attempt++) {
             try {
-                // Equal-jitter back-off so reconnects avoid a fixed cadence (B4).
-                $base = min($attempt * 2, 10);
-                $this->runtime->sleep($base / 2 + (mt_rand(0, 1000) / 1000.0) * ($base / 2));
+                // First attempt is immediate; later ones back off with equal jitter.
+                if ($attempt > 1) {
+                    $base = min(($attempt - 1) * 2, 10);
+                    $this->runtime->sleep($base / 2 + (mt_rand(0, 1000) / 1000.0) * ($base / 2));
+                }
                 $this->connection = ($this->reconnector)();
                 $this->stats['reconnects']++;
                 $this->logger?->info("Pump reconnected (attempt {$attempt})");
 
-                // Replay calls that never got an answer (new msg_ids, re-keyed).
-                foreach ($this->pending as $oldMsgId => $call) {
-                    $this->resend($oldMsgId);
-                }
+                $this->replayPending();
 
                 // Tell the update side to fetch what it missed while we were down.
                 if ($this->updateHandler !== null) {
@@ -798,22 +941,70 @@ final class MessagePump
 
         $this->logger?->error('Pump failed to reconnect after 5 attempts - stopping');
         $this->running = false;
+        $this->failPending(new MTProtoException("Pump stopped: reconnect failed ({$reason})"));
     }
 
-}
-
-/**
- * An in-flight RPC awaiting its response.
- */
-final class PendingCall
-{
-    public function __construct(
-        public readonly Channel $channel,
-        public readonly string  $payload,
-        public readonly bool    $contentRelated,
-        public readonly string  $method,
-        public bool             $acked = false,
-    )
+    /**
+     * Resend calls after a reconnect: unsent ones now, sent ones after the
+     * redelivery grace if the server has not answered them by then.
+     */
+    private function replayPending(): void
     {
+        $calls = [];
+        foreach ($this->pending as $msgId => $call) {
+            $calls[spl_object_id($call)] ??= [$msgId, $call];
+        }
+
+        $this->awaitingRedelivery = [];
+        $this->redelivered = 0;
+        foreach ($calls as [, $call]) {
+            foreach ($call->ids as $id) {
+                $this->awaitingRedelivery[$id] = true;
+            }
+        }
+
+        $delayed = [];
+        foreach ($calls as [$msgId, $call]) {
+            if (!$call->sent || $this->redeliveryGrace <= 0) {
+                $this->resend(end($call->ids));
+            } else {
+                $delayed[] = $call;
+            }
+        }
+
+        if ($delayed === []) {
+            return;
+        }
+
+        $this->runtime->spawn(function () use ($delayed): void {
+            $this->runtime->sleep($this->redeliveryGrace);
+
+            if ($this->redelivered > 0) {
+                $this->graceMisses = 0;
+            } elseif (++$this->graceMisses >= 2) {
+                $this->redeliveryGrace = 0.0;
+                $this->logger?->debug('Pump: the server does not redeliver answers after reconnects - replaying immediately from now on');
+            }
+
+            foreach ($delayed as $call) {
+                $last = end($call->ids);
+                if ($this->running && isset($this->pending[$last])) {
+                    try {
+                        $this->resend($last);
+                    } catch (\Throwable $e) {
+                        $this->logger?->warning("Pump replay of {$call->method} failed: {$e->getMessage()}");
+                    }
+                }
+            }
+        });
     }
+
+    /**
+     * Collapse numbers so error texts group together ("FLOOD_WAIT_7" -> "FLOOD_WAIT_X").
+     */
+    private static function normalise(string $message): string
+    {
+        return (string) preg_replace(['/_\d+(?=\b|_)/', '/\d+/'], ['_X', 'N'], $message);
+    }
+
 }

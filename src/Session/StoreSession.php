@@ -48,6 +48,8 @@ class StoreSession implements SessionInterface
             return false;
         }
 
+        \LaraGram\MTProto\Store\EncryptedStore::refuseIfEncrypted($content, "session '{$this->name}'");
+
         $data = json_decode($content, true);
         if (!is_array($data)) {
             return false;
@@ -187,7 +189,18 @@ class StoreSession implements SessionInterface
     public function setTimeDelta(int $delta): void
     {
         $this->timeDelta = $delta;
+        // A new time base: msg_ids restart from the corrected clock.
+        $this->lastMsgId = 0;
         $this->save();
+    }
+
+    /**
+     * Move the content-related message counter (bad_msg_notification 32/33:
+     * seqno too low/high). Positive to skip ahead, negative to step back.
+     */
+    public function shiftSeqNo(int $contentMessages): void
+    {
+        $this->seqNoCounter = max(0, $this->seqNoCounter + $contentMessages);
     }
 
     public function getServerTime(): int
@@ -209,5 +222,18 @@ class StoreSession implements SessionInterface
         $this->lastMsgId = $msgId;
 
         return $msgId;
+    }
+
+    /**
+     * Keep key material out of var_dump()/print_r()/dump() output.
+     */
+    public function __debugInfo(): array
+    {
+        return [
+            'dc_id' => $this->dcId,
+            'auth_key' => $this->authKey !== null ? '[redacted, id ' . bin2hex((string) $this->authKeyId) . ']' : null,
+            'server_salt' => $this->serverSalt !== null ? '[redacted]' : null,
+            'time_delta' => $this->timeDelta,
+        ];
     }
 }

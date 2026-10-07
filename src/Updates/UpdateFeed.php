@@ -32,6 +32,12 @@ class UpdateFeed
     private array $listeners = [];
 
     /**
+     * Observers of the raw users/chats carried by update containers and differences.
+     * @var list<callable(array, array): void>
+     */
+    private array $entityListeners = [];
+
+    /**
      * Whether we are currently fetching difference (to avoid recursion).
      */
     private bool $fetchingDifference = false;
@@ -99,6 +105,17 @@ class UpdateFeed
     public function setUpdateHandler(callable $callback): void
     {
         $this->onUpdate = $callback;
+    }
+
+    /**
+     * Observe the full `users` and `chats` objects of every update container
+     * and difference, before their updates are dispatched.
+     *
+     * @param callable(array $users, array $chats): void $callback
+     */
+    public function onEntities(callable $callback): void
+    {
+        $this->entityListeners[] = $callback;
     }
 
     /**
@@ -1158,6 +1175,10 @@ class UpdateFeed
      */
     private function cacheEntities(array $data): void
     {
+        foreach ($this->entityListeners as $listener) {
+            $listener($data['users'] ?? [], $data['chats'] ?? []);
+        }
+
         $peerDb = $this->client->getPeerDatabase();
         if ($peerDb === null) {
             return;

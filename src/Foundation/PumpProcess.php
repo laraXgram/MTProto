@@ -37,6 +37,10 @@ class PumpProcess
         $runtime = $app->make(Runtime::class);
         $logger = $app['mtproto.logger'] ?? null;
 
+        if (($stale = \LaraGram\MTProto\TL\SchemaSource::staleReason($app['config']['mtproto.schema.path'] ?? null)) !== null) {
+            $logger?->warning("[pump-process] {$stale}");
+        }
+
         $sessions = $this->waitForSessions($app, $manager, $runtime, $logger);
 
         $pumps = [];

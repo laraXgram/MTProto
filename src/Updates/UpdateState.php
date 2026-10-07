@@ -191,6 +191,7 @@ class UpdateState
             return;
         }
 
+        \LaraGram\MTProto\Store\EncryptedStore::refuseIfEncrypted($json, "update state of session '{$this->storeKey}'");
         $data = json_decode($json, true);
         if (!is_array($data)) {
             return;

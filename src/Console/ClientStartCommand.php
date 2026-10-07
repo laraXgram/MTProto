@@ -8,6 +8,7 @@ use LaraGram\Console\Command;
 use LaraGram\MTProto\Foundation\ClientDispatcher;
 use LaraGram\MTProto\Foundation\ClientKernel;
 use LaraGram\MTProto\Foundation\ClientManager;
+use LaraGram\MTProto\TL\SchemaSource;
 use LaraGram\MTProto\TL\TLObject;
 use LaraGram\MTProto\Updates\PumpLoop;
 
@@ -26,6 +27,10 @@ class ClientStartCommand extends Command
     {
         /** @var ClientManager $manager */
         $manager = $this->laragram['mtproto.manager'];
+
+        if (($stale = SchemaSource::staleReason(config('mtproto.schema.path'))) !== null) {
+            $this->components->warn($stale);
+        }
 
         $sessions = $this->resolveSessions();
 
@@ -155,27 +160,6 @@ class ClientStartCommand extends Command
 
         // Listen files (with their per-file session bindings) load once.
         $this->loadClientListens();
-
-        $usePump = (bool) ($this->laragram['config']['mtproto.use_pump'] ?? false);
-
-        if (!$usePump) {
-            if (count($sessions) > 1) {
-                $this->components->error(
-                    'Multiple sessions require mtproto.use_pump=true (the legacy handler is single-session).'
-                );
-                return self::FAILURE;
-            }
-
-            $session = $sessions[0];
-            $this->components->info("Client '{$session}' connected and listening for updates...");
-            $this->newLine();
-
-            $manager->handler($session)
-                ->onUpdate(fn (TLObject $u, string $t) => $this->dispatchUpdate($kernel, $u, $t, $session))
-                ->start();
-
-            return self::SUCCESS;
-        }
 
         $pumps = [];
         foreach ($sessions as $session) {

@@ -36,11 +36,106 @@ final class TLParser
     /** @var array<string, TLType> Types */
     private array $types = [];
 
+    /** API layer the schema declares (`// LAYER N`), if any. */
+    private ?int $layer = null;
+
     private \LaraGram\Filesystem\Filesystem $files;
+
+    /** Process-wide parser shared by every client (the schema is read-only). */
+    private static ?self $shared = null;
 
     public function __construct(?\LaraGram\Filesystem\Filesystem $files = null)
     {
         $this->files = $files ?? new \LaraGram\Filesystem\Filesystem();
+    }
+
+    /**
+     * The process-wide schema: the compiled `Generated/schema.json` when present
+     * (whatever the Generated classes were built from - package or published
+     * schemas), otherwise the package `.tl` files parsed once.
+     */
+    public static function shared(): self
+    {
+        if (self::$shared !== null) {
+            return self::$shared;
+        }
+
+        $parser = new self();
+        $compiled = dirname(__DIR__) . '/Generated/' . Compiler\SchemaCompiler::RUNTIME_SCHEMA;
+        $data = is_file($compiled) ? json_decode((string) file_get_contents($compiled), true) : null;
+
+        if (is_array($data) && isset($data['constructors'], $data['methods'])) {
+            $parser->loadCompiled($data);
+        } else {
+            foreach (SchemaSource::files(SchemaSource::packagePath()) as $path) {
+                $parser->parseFile($path);
+            }
+        }
+
+        return self::$shared = $parser;
+    }
+
+    /**
+     * Forget the shared parser (after recompiling in the same process).
+     */
+    public static function flushShared(): void
+    {
+        self::$shared = null;
+    }
+
+    /**
+     * The layer declared by the parsed schema, or null when it has no marker.
+     */
+    public function layer(): ?int
+    {
+        return $this->layer;
+    }
+
+    /**
+     * Load a schema compiled by {@see \LaraGram\MTProto\TL\Compiler\SchemaCompiler}.
+     *
+     * @param array{layer?: int, constructors: list<array>, methods: list<array>} $data
+     */
+    public function loadCompiled(array $data): static
+    {
+        $build = static function (array $row, string $class): TLConstructor|TLMethod {
+            [$id, $fullName, $type, $rawParams] = $row;
+
+            $params = [];
+            foreach ($rawParams as [$name, $pType, $optional, $flagIndex, $flagField, $vector, $bare]) {
+                $params[] = new TLParameter($name, $pType, $optional, $flagIndex, $flagField, $vector, $bare);
+            }
+
+            $dot = strrpos($fullName, '.');
+
+            return new $class(
+                name: $dot === false ? $fullName : substr($fullName, $dot + 1),
+                id: $id,
+                type: $type,
+                params: $params,
+                namespace: $dot === false ? '' : substr($fullName, 0, $dot),
+            );
+        };
+
+        foreach ($data['constructors'] as $row) {
+            $constructor = $build($row, TLConstructor::class);
+            $this->constructors[$constructor->getFullName()] = $constructor;
+            $this->constructorsById[$constructor->getId()] = $constructor;
+        }
+
+        foreach ($data['methods'] as $row) {
+            $method = $build($row, TLMethod::class);
+            $this->methods[$method->getFullName()] = $method;
+            $this->methodsById[$method->getId()] = $method;
+        }
+
+        if (isset($data['layer'])) {
+            $this->layer = (int) $data['layer'];
+        }
+
+        $this->buildTypes();
+
+        return $this;
     }
 
     /**
@@ -60,6 +155,8 @@ final class TLParser
      */
     public function parse(string $content): void
     {
+        $this->layer = SchemaSource::layerFromContent($content) ?? $this->layer;
+
         // Remove multi-line comments
         $content = preg_replace('/\/\*.*?\*\//s', '', $content);
 

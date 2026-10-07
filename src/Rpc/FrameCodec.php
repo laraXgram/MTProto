@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace LaraGram\MTProto\RPC;
+namespace LaraGram\MTProto\Rpc;
 
 use LaraGram\MTProto\Contracts\CryptoInterface;
 use LaraGram\MTProto\Contracts\SessionInterface;
@@ -77,7 +77,9 @@ final class FrameCodec
         $seqNo = $this->session->getSeqNo($contentRelated);
 
         // salt(8) + session_id(8) + msg_id(8) + seq_no(4) + length(4) + data
-        $innerData = $this->session->getServerSalt()
+        // No salt yet (a session seeded from a Telethon/Pyrogram/v2 string):
+        // send zeros - the server answers bad_server_salt with the real one.
+        $innerData = ($this->session->getServerSalt() ?? "\0\0\0\0\0\0\0\0")
             . $this->session->getSessionId()
             . pack('P', $msgId)
             . pack('V', $seqNo)

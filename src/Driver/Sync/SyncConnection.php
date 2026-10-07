@@ -18,6 +18,12 @@ use Socket;
 class SyncConnection implements ConnectionInterface, DriverInterface
 {
     /**
+     * Seconds a connected socket may make no send/receive progress before the
+     * operation fails.
+     */
+    public const IO_TIMEOUT = 30.0;
+
+    /**
      * Socket resource.
      */
     private ?Socket $socket = null;
@@ -78,7 +84,6 @@ class SyncConnection implements ConnectionInterface, DriverInterface
         socket_set_option($socket, SOL_TCP, TCP_NODELAY, 1);
 
         // Connect with timeout
-        $startTime = microtime(true);
         socket_set_nonblock($socket);
 
         $result = @socket_connect($socket, $address, $port);
@@ -123,12 +128,11 @@ class SyncConnection implements ConnectionInterface, DriverInterface
         // Switch back to blocking mode
         socket_set_block($socket);
 
-        // Recalculate remaining timeout
-        $elapsed = microtime(true) - $startTime;
-        $remainingTimeout = max(1.0, $timeout - $elapsed);
-
-        socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, $this->timeoutToArray($remainingTimeout));
-        socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, $this->timeoutToArray($remainingTimeout));
+        // Connected: from here on the timeouts are stall detectors for
+        // long-lived I/O (a 512 KiB part to a throttled server can take a
+        // while), not the connect budget.
+        socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, $this->timeoutToArray(self::IO_TIMEOUT));
+        socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, $this->timeoutToArray(self::IO_TIMEOUT));
 
         $this->socket = $socket;
         $this->remoteAddress = $address;

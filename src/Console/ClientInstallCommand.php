@@ -53,17 +53,21 @@ class ClientInstallCommand extends Command
         $appBootstrapPath = $this->laragram->bootstrapPath('app.php');
 
         $content = file_get_contents($appBootstrapPath);
+        $definition = 'client: __DIR__.\'/../listens/client.php\',';
 
-        if (str_contains($content, '// client: ')) {
-            (new Filesystem)->replaceInFile(
-                '// client: ',
-                'client: ',
+        if (preg_match('/^\s*client\s*:/m', $content)) {
+            return;
+        }
+
+        if (preg_match('#//\s*client\s*:.*$#m', $content)) {
+            (new Filesystem)->put(
                 $appBootstrapPath,
+                preg_replace('#//\s*client\s*:.*$#m', $definition, $content, 1),
             );
-        } elseif (str_contains($content, 'bot: __DIR__.\'/../listens/bot.php\',')) {
+        } elseif (preg_match('#^(\s*)bot\s*:\s*__DIR__\s*\.\s*\'/\.\./listens/bot\.php\',#m', $content, $matches)) {
             (new Filesystem)->replaceInFile(
-                'bot: __DIR__.\'/..//listens/bot.php\',',
-                'bot: __DIR__.\'/..//listens/bot.php\','.PHP_EOL.'        client: __DIR__.\'/../listens/client.php\',',
+                $matches[0],
+                $matches[0].PHP_EOL.ltrim($matches[1], "\r\n").$definition,
                 $appBootstrapPath,
             );
         } else {

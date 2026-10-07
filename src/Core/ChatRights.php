@@ -14,6 +14,7 @@ final class ChatRights
         'ban_users', 'invite_users', 'pin_messages', 'add_admins', 'anonymous',
         'manage_call', 'other', 'manage_topics', 'post_stories', 'edit_stories',
         'delete_stories', 'manage_direct_messages', 'manage_ranks',
+        'manage_linked_peers', 'manage_welcome_messages',
     ];
 
     /** @var list<string> chatBannedRights#9f120418 flags */
@@ -23,6 +24,7 @@ final class ChatRights
         'change_info', 'invite_users', 'pin_messages', 'manage_topics',
         'send_photos', 'send_videos', 'send_roundvideos', 'send_audios',
         'send_voices', 'send_docs', 'send_plain', 'edit_rank', 'send_reactions',
+        'manage_linked_peers',
     ];
 
     /**
