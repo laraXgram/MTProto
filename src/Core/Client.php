@@ -110,6 +110,7 @@ class Client
     private int $floodSleepLimit = 60;
     private int $maxRetries = 5;
     private bool $usePump = false;
+    private bool $primePeerCache = true;
     private bool $autoMigrate = true;
     private ?LoggerInterface $logger;
     private Filesystem $files;
@@ -151,6 +152,7 @@ class Client
      * @type int $layer MTProto API layer (default: the compiled layer, {@see compiledLayer()})
      * @type bool $flood_sleep Auto-sleep & retry on FLOOD_WAIT (default true)
      * @type int $flood_sleep_limit Max FLOOD_WAIT seconds to wait before rethrowing (default 60)
+     * @type bool $prime_peer_cache Load the dialog list into the peer cache when the pump starts (default true)
      * @type int $max_retries Max retries for transient/migrate errors (default 5)
      * @type array $dc_addresses Per-DC endpoint overrides: [dcId => 'host:port'|[host, port]]
      * @type bool $media Connect to the DC's media-only endpoint when known (media sockets)
@@ -187,6 +189,7 @@ class Client
         $this->floodSleepLimit = (int)($options['flood_sleep_limit'] ?? 60);
         $this->maxRetries = (int)($options['max_retries'] ?? 5);
         $this->usePump = (bool)($options['use_pump'] ?? false);
+        $this->primePeerCache = (bool)($options['prime_peer_cache'] ?? true);
         $this->autoMigrate = (bool)($options['auto_migrate'] ?? true);
         $this->logger = $options['logger'] ?? $this->resolveDefaultLogger();
         $this->files = $options['files'] ?? new Filesystem();
@@ -580,7 +583,7 @@ class Client
      */
     public function primePeerCache(int $limit = 100): void
     {
-        if ($this->peerDb === null) {
+        if ($this->peerDb === null || !$this->primePeerCache) {
             return;
         }
 
