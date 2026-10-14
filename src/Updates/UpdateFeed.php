@@ -77,10 +77,21 @@ class UpdateFeed
     /**
      * Run a handler in its own coroutine when a runtime is available.
      */
-    private function runHandler(callable $run): void
+    private function runHandler(callable $run, ?callable $retry = null): void
     {
         if ($this->runtime !== null && $this->runtime->isSupported() && $this->runtime->inCoroutine()) {
-            $this->runtime->spawn($run);
+            // An exception escaping a coroutine would take the whole process down.
+            $this->runtime->spawn(function () use ($run, $retry): void {
+                try {
+                    $run();
+                } catch (\Throwable $e) {
+                    $this->logger?->warning('Update handler failed: ' . $e->getMessage() . ($retry !== null ? ' - retrying in 5s' : ''));
+                    if ($retry !== null) {
+                        $this->runtime->sleep(5.0);
+                        $retry();
+                    }
+                }
+            });
             return;
         }
 
@@ -89,12 +100,15 @@ class UpdateFeed
 
     public function scheduleFetchDifference(): void
     {
-        $this->runHandler(fn () => $this->fetchDifference());
+        $this->runHandler(fn () => $this->fetchDifference(), fn () => $this->scheduleFetchDifference());
     }
 
     private function scheduleFetchChannelDifference(int $channelId): void
     {
-        $this->runHandler(fn () => $this->fetchChannelDifference($channelId));
+        $this->runHandler(
+            fn () => $this->fetchChannelDifference($channelId),
+            fn () => $this->scheduleFetchChannelDifference($channelId),
+        );
     }
 
     /**

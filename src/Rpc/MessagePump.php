@@ -73,6 +73,9 @@ final class MessagePump
     /** Seconds between keep-alive pings. */
     private float $pingInterval = 25.0;
 
+    /** When the last frame arrived: a link silent for several pings is dead even if the socket looks open. */
+    private float $lastFrameAt = 0.0;
+
     /**
      * Lightweight transfer diagnostics, cumulative since start().
      * @var array<string, int>
@@ -252,6 +255,10 @@ final class MessagePump
         }
         $this->pending = [];
 
+        // Outside a coroutine (a destructor at shutdown) nothing can be waiting.
+        if (!$this->runtime->inCoroutine()) {
+            return;
+        }
         foreach ($calls as $call) {
             try {
                 $call->channel->push(['_pump_error' => $error]);
@@ -445,6 +452,7 @@ final class MessagePump
                 }
 
                 $data = $this->transport->unwrap($packet);
+                $this->lastFrameAt = microtime(true);
                 $this->routeFrame($data);
             } catch (ReadTimeoutException) {
                 // Quiet link on a frame boundary - the stream is intact.
@@ -881,6 +889,16 @@ final class MessagePump
     private function sendPing(): void
     {
         if (!$this->running) {
+            return;
+        }
+        // No frame (not even a pong) for three pings: drop the socket so the reader reconnects.
+        if ($this->lastFrameAt > 0.0 && microtime(true) - $this->lastFrameAt > $this->pingInterval * 3) {
+            $this->logger?->warning(sprintf('Pump link silent for %.0fs - reconnecting', microtime(true) - $this->lastFrameAt));
+            $this->lastFrameAt = microtime(true);
+            try {
+                $this->connection->disconnect();
+            } catch (\Throwable) {
+            }
             return;
         }
         try {
