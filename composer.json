@@ -21,7 +21,8 @@
         "ext-openssl": "*",
         "ext-sockets": "*",
         "ext-zlib": "*",
-        "laraxgram/surge": "^1"
+        "laraxgram/core": "^4.5",
+        "laraxgram/surge": "^1.2"
     },
     "suggest": {
         "ext-swoole": "For non-blocking coroutine I/O. (SwooleDriver / Surge)",
