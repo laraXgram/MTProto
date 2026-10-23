@@ -22,7 +22,7 @@
         "ext-sockets": "*",
         "ext-zlib": "*",
         "laraxgram/core": "^4.5",
-        "laraxgram/surge": "^1.2"
+        "laraxgram/surge": "^2.0"
     },
     "suggest": {
         "ext-swoole": "For non-blocking coroutine I/O. (SwooleDriver / Surge)",
