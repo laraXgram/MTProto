@@ -319,6 +319,115 @@ trait ManagesChats
         return $this->invoke('messages.deleteExportedChatInvite', ['peer' => $peer, 'link' => $link]);
     }
 
+    /**
+     * Set the default permissions of every member (`$restrictions` is a
+     * {@see ChatRights::BANNED_FLAGS} list of what members may NOT do, or "all").
+     *
+     * @param list<string>|array<string,bool>|string $restrictions
+     */
+    public function setChatPermissions(string|int|array $peer, array|string $restrictions): mixed
+    {
+        return $this->invoke('messages.editChatDefaultBannedRights', [
+            'peer' => $peer,
+            'banned_rights' => ChatRights::banned($restrictions),
+        ]);
+    }
+
+    /**
+     * Set the slow mode delay of a supergroup in seconds (0 turns it off).
+     */
+    public function setSlowMode(string|int|array $peer, int $seconds): mixed
+    {
+        $this->assertChannel($peer, 'setSlowMode');
+
+        return $this->invoke('channels.toggleSlowMode', ['channel' => $peer, 'seconds' => $seconds]);
+    }
+
+    /**
+     * Forbid (or allow again) forwarding and saving the chat's messages.
+     */
+    public function setChatProtectedContent(string|int|array $peer, bool $enabled = true): mixed
+    {
+        return $this->invoke('messages.toggleNoForwards', ['peer' => $peer, 'enabled' => $enabled]);
+    }
+
+    /**
+     * Make `$user` the owner of a group or channel you own (needs the 2FA password).
+     */
+    public function transferChatOwnership(string|int|array $peer, string|int|array $user, string $password): mixed
+    {
+        return $this->invoke('messages.editChatCreator', [
+            'peer' => $peer,
+            'user_id' => $user,
+            'password' => $this->passwordCheck($password),
+        ]);
+    }
+
+    /**
+     * Get the t.me link of a supergroup or channel message.
+     */
+    public function getMessageLink(string|int|array $peer, int $msgId, bool $thread = false, bool $grouped = false): string
+    {
+        $this->assertChannel($peer, 'getMessageLink');
+
+        $params = ['channel' => $peer, 'id' => $msgId];
+        if ($thread) {
+            $params['thread'] = true;
+        }
+        if ($grouped) {
+            $params['grouped'] = true;
+        }
+
+        return (string) ($this->invoke('channels.exportMessageLink', $params)['link'] ?? '');
+    }
+
+    /**
+     * Move chats to the archive.
+     *
+     * @param string|int|array|list<string|int|array> $peers
+     */
+    public function archiveChats(string|int|array $peers): mixed
+    {
+        return $this->moveToFolder($peers, 1);
+    }
+
+    /**
+     * @param string|int|array|list<string|int|array> $peers
+     */
+    public function unarchiveChats(string|int|array $peers): mixed
+    {
+        return $this->moveToFolder($peers, 0);
+    }
+
+    /**
+     * Mute a chat's notifications until `$until` (a unix time; forever by default).
+     */
+    public function muteChat(string|int|array $peer, int $until = 0x7FFFFFFF): mixed
+    {
+        return $this->invoke('account.updateNotifySettings', [
+            'peer' => ['_' => 'inputNotifyPeer', 'peer' => $this->inputPeerFor($peer)],
+            'settings' => ['_' => 'inputPeerNotifySettings', 'mute_until' => $until],
+        ]);
+    }
+
+    public function unmuteChat(string|int|array $peer): mixed
+    {
+        return $this->muteChat($peer, 0);
+    }
+
+    /**
+     * @param string|int|array|list<string|int|array> $peers
+     */
+    private function moveToFolder(string|int|array $peers, int $folderId): mixed
+    {
+        return $this->invoke('folders.editPeerFolders', [
+            'folder_peers' => array_map(
+                fn ($peer): array => ['_' => 'inputFolderPeer', 'peer' => $this->inputPeerFor($peer), 'folder_id' => $folderId],
+                $this->userList($peers),
+            ),
+        ]);
+    }
+
     private function applyChatPhoto(string|int|array $peer, array $photo): mixed
     {
         $input = $this->inputPeerFor($peer);

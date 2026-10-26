@@ -34,6 +34,8 @@ use LaraGram\MTProto\Core\Concerns\HandlesStars;
 use LaraGram\MTProto\Core\Concerns\HandlesDrafts;
 use LaraGram\MTProto\Core\Concerns\DownloadsMedia;
 use LaraGram\MTProto\Core\Concerns\MessagingExtras;
+use LaraGram\MTProto\Core\Concerns\HandlesWallet;
+use LaraGram\MTProto\Core\Concerns\InteractsWithBots;
 use LaraGram\MTProto\Core\Concerns\ManagesProfile;
 use LaraGram\MTProto\Core\Concerns\BotControls;
 use LaraGram\MTProto\Core\Concerns\PremiumFeatures;
@@ -70,6 +72,8 @@ class Client
     use HandlesSecretChats;
     use ManagesCommunities;
     use HandlesEphemeral;
+    use InteractsWithBots;
+    use HandlesWallet;
 
     public const VERSION = '0.3.0';
     public const LAYER = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
@@ -714,6 +718,76 @@ class Client
         );
 
         return $this->sendUploadedMedia($peer, $media, $message, $params);
+    }
+
+    /**
+     * Send an uploaded sticker (.webp, animated .tgs or video .webm). Recognised
+     * $params: emoji (the sticker's alt emoji).
+     */
+    public function sendSticker(string|int|array $peer, string $path, array $params = []): mixed
+    {
+        $name = $this->files->basename($path);
+        $emoji = (string)($params['emoji'] ?? '');
+        unset($params['emoji'], $params['file_name']);
+
+        $mime = match (strtolower($this->files->extension($path))) {
+            'tgs' => 'application/x-tgsticker',
+            'webm' => 'video/webm',
+            default => 'image/webp',
+        };
+
+        $media = InputMedia::uploadedDocument(
+            $this->uploadFile($path, $name),
+            $mime,
+            [
+                ['_' => 'documentAttributeSticker', 'alt' => $emoji, 'stickerset' => ['_' => 'inputStickerSetEmpty']],
+                InputMedia::attrFilename($name),
+            ],
+        );
+
+        return $this->sendUploadedMedia($peer, $media, null, $params);
+    }
+
+    /**
+     * Send an uploaded animation (GIF or silent MP4). Recognised $params:
+     * duration, w, h.
+     */
+    public function sendAnimation(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
+    {
+        $name = $params['file_name'] ?? $this->files->basename($path);
+        $duration = (int)($params['duration'] ?? 0);
+        $w = (int)($params['w'] ?? 0);
+        $h = (int)($params['h'] ?? 0);
+        unset($params['file_name'], $params['duration'], $params['w'], $params['h']);
+
+        $mime = $this->guessMimeType($path) ?: 'video/mp4';
+        $attributes = [InputMedia::attrAnimated(), InputMedia::attrFilename($name)];
+        if ($mime !== 'image/gif') {
+            array_unshift($attributes, InputMedia::attrVideo($duration, $w, $h));
+        }
+
+        $media = InputMedia::uploadedDocument($this->uploadFile($path, $name), $mime, $attributes);
+
+        return $this->sendUploadedMedia($peer, $media, $message, $params);
+    }
+
+    /**
+     * Send an uploaded round video message (square MP4). Recognised $params:
+     * duration, length (the side in pixels).
+     */
+    public function sendVideoNote(string|int|array $peer, string $path, array $params = []): mixed
+    {
+        $duration = (int)($params['duration'] ?? 0);
+        $length = (int)($params['length'] ?? 0);
+        unset($params['duration'], $params['length'], $params['file_name']);
+
+        $media = InputMedia::uploadedDocument(
+            $this->uploadFile($path),
+            'video/mp4',
+            [InputMedia::attrVideo($duration, $length, $length, roundMessage: true)],
+        );
+
+        return $this->sendUploadedMedia($peer, $media, null, $params);
     }
 
     public function sendLocation(string|int|array $peer, float $lat, float $long, array $params = []): mixed

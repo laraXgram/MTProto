@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Core\Concerns;
 
+use LaraGram\MTProto\Auth\Authorization;
+
 /**
  * @mixin \LaraGram\MTProto\Core\Client
  */
@@ -88,5 +90,65 @@ trait ManagesProfile
         }
 
         return $this->invoke('account.updateEmojiStatus', ['emoji_status' => $status]);
+    }
+
+    /**
+     * Prove the account's 2FA password: an `inputCheckPasswordSRP` for the
+     * methods that ask for `password` (messages.editChatCreator,
+     * wallet.exportSecretPhrase, ...).
+     */
+    public function passwordCheck(string $password): array
+    {
+        return (new Authorization($this))->passwordCheck($password);
+    }
+
+    /**
+     * Exchange the 2FA password for a temporary password (account.getTmpPassword),
+     * valid for `$period` seconds, for the methods that take `tmp_password`.
+     */
+    public function tmpPassword(string $password, int $period = 60): string
+    {
+        $result = $this->invoke('account.getTmpPassword', [
+            'password' => $this->passwordCheck($password),
+            'period' => $period,
+        ]);
+
+        return (string) ($result['tmp_password'] ?? '');
+    }
+
+    /**
+     * Restore the default share theme.
+     */
+    public function resetShareTheme(string|int|array $peer = 'me'): mixed
+    {
+        return $this->invoke('messages.setShareTheme', ['peer' => $peer, 'theme' => ['_' => 'shareThemeDefault']]);
+    }
+
+    /**
+     * Use a backdrop (from messages.getShareThemeBackdrops) and emoji pattern as the share theme.
+     *
+     * @param list<string|int> $emojis emoticons or custom emoji document ids
+     */
+    public function setShareThemeBackdrop(string|int|array $peer, ?int $backdropId = null, array $emojis = []): mixed
+    {
+        $theme = ['_' => 'shareThemeEmojiBackdrop'];
+        if ($backdropId !== null) {
+            $theme['backdrop_id'] = $backdropId;
+        }
+        if ($emojis !== []) {
+            $theme['emojis'] = array_map(static fn (string|int $emoji): array => is_int($emoji)
+                ? ['_' => 'reactionCustomEmoji', 'document_id' => $emoji]
+                : ['_' => 'reactionEmoji', 'emoticon' => $emoji], array_values($emojis));
+        }
+
+        return $this->invoke('messages.setShareTheme', ['peer' => $peer, 'theme' => $theme]);
+    }
+
+    /**
+     * Use a saved collectible gift (message id, slug or InputSavedStarGift) as the share theme.
+     */
+    public function setShareThemeGift(string|int|array $peer, int|string|array $gift): mixed
+    {
+        return $this->invoke('messages.setShareTheme', ['peer' => $peer, 'theme' => ['_' => 'inputShareThemeGift', 'stargift' => $this->savedGift($gift)]]);
     }
 }

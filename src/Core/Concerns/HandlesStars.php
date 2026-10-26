@@ -52,6 +52,56 @@ trait HandlesStars
         return $this->invoke('payments.getUniqueStarGift', ['slug' => $slug]);
     }
 
+    /**
+     * Withdraw a collectible gift to the TON blockchain (needs the 2FA password).
+     * `$keepOnProfile` keeps showing it on the profile after the withdrawal.
+     */
+    public function withdrawStarGift(int|string|array $gift, string $password, bool $keepOnProfile = false): mixed
+    {
+        $params = [
+            'stargift' => $this->savedGift($gift),
+            'tmp_password' => $this->tmpPassword($password),
+        ];
+        if ($keepOnProfile) {
+            $params['keep_on_profile'] = true;
+        }
+
+        return $this->invoke('payments.withdrawStarGift', $params);
+    }
+
+    /**
+     * Get the Fragment URL to withdraw a collectible gift (needs the 2FA password).
+     */
+    public function getStarGiftWithdrawalUrl(int|string|array $gift, string $password): mixed
+    {
+        return $this->invoke('payments.getStarGiftWithdrawalUrl', [
+            'stargift' => $this->savedGift($gift),
+            'tmp_password' => $this->tmpPassword($password),
+        ]);
+    }
+
+    public function deleteStarGift(int|string|array $gift): mixed
+    {
+        return $this->invoke('payments.deleteStarGift', ['stargift' => $this->savedGift($gift)]);
+    }
+
+    /**
+     * Exchange rates used for Stars and TON, keyed by currency code.
+     *
+     * @return array<string, float>
+     */
+    public function getCurrencyRates(): array
+    {
+        $result = $this->invoke('payments.getCurrencyRates', []);
+
+        $rates = [];
+        foreach ((array) ($result['rates'] ?? []) as $rate) {
+            $rates[(string) $rate['currency']] = (float) $rate['rate'];
+        }
+
+        return $rates;
+    }
+
     public function sendPaidReaction(string|int|array $peer, int $msgId, int $count = 1): mixed
     {
         return $this->invoke('messages.sendPaidReaction', [

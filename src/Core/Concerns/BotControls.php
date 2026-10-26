@@ -101,6 +101,57 @@ trait BotControls
         return $this->invoke($method, ['admin_rights' => ChatRights::admin($rights)]);
     }
 
+    /**
+     * Give a bot you own an additional (collectible) username.
+     */
+    public function addBotUsername(string|int|array $bot, string $username): mixed
+    {
+        return $this->invoke('bots.addUsername', ['bot' => $bot, 'username' => ltrim($username, '@')]);
+    }
+
+    public function removeBotUsername(string|int|array $bot, string $username): mixed
+    {
+        return $this->invoke('bots.removeUsername', ['bot' => $bot, 'username' => ltrim($username, '@')]);
+    }
+
+    /**
+     * Check whether a username is free for a new bot, or for an additional
+     * username of an existing bot when `$additional` is true.
+     */
+    public function checkBotUsername(string $username, bool $additional = false): bool
+    {
+        $params = ['username' => ltrim($username, '@')];
+        if ($additional) {
+            $params['additional'] = true;
+        }
+
+        return (bool) $this->invoke('bots.checkUsername', $params);
+    }
+
+    /**
+     * Verify (or, with `$enabled` false, unverify) a peer as a verifier bot.
+     * `$bot` names the verifier when a user account manages it.
+     */
+    public function setCustomVerification(
+        string|int|array $peer,
+        bool $enabled = true,
+        ?string $description = null,
+        string|int|array|null $bot = null,
+    ): mixed {
+        $params = ['peer' => $peer];
+        if ($enabled) {
+            $params['enabled'] = true;
+        }
+        if ($description !== null && $description !== '') {
+            $params['custom_description'] = ['_' => 'textWithEntities', 'text' => $description, 'entities' => []];
+        }
+        if ($bot !== null) {
+            $params['bot'] = $bot;
+        }
+
+        return $this->invoke('bots.setCustomVerification', $params);
+    }
+
     private function botCommandScope(string|array $scope): array
     {
         if (is_array($scope)) {

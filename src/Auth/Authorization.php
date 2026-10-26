@@ -192,23 +192,39 @@ class Authorization
             throw new MTProtoException('2FA not required. Current state: ' . $this->state);
         }
 
-        // Get password settings
-        $passwordInfo = $this->client->invoke('account.getPassword', []);
-
-        // Compute SRP parameters
-        $srp = $this->computeSrpParams($password, $passwordInfo);
-
         $result = $this->client->invoke('auth.checkPassword', [
-            'password' => [
-                '_' => 'inputCheckPasswordSRP',
-                'srp_id' => $passwordInfo['srp_id'],
-                'A' => $srp['A'],
-                'M1' => $srp['M1'],
-            ],
+            'password' => $this->passwordCheck($password),
         ]);
 
         $this->state = self::STATE_AUTHORIZED;
         return $result;
+    }
+
+    /**
+     * Build the `inputCheckPasswordSRP` proof of the account's 2FA password,
+     * for the methods that require it (auth.checkPassword,
+     * channels.editCreator, account.getTmpPassword, ...).
+     *
+     * @param array|null $passwordInfo account.password; fetched when null
+     * @return array inputCheckPasswordSRP
+     * @throws MTProtoException When the account has no 2FA password
+     */
+    public function passwordCheck(string $password, ?array $passwordInfo = null): array
+    {
+        $passwordInfo ??= $this->client->invoke('account.getPassword', []);
+
+        if (empty($passwordInfo['has_password'])) {
+            throw new MTProtoException('The account has no 2FA password.');
+        }
+
+        $srp = $this->computeSrpParams($password, $passwordInfo);
+
+        return [
+            '_' => 'inputCheckPasswordSRP',
+            'srp_id' => $passwordInfo['srp_id'],
+            'A' => $srp['A'],
+            'M1' => $srp['M1'],
+        ];
     }
 
     /**
