@@ -63,8 +63,10 @@ return [
     | The pump runs INSIDE the Surge server automatically - `php laragram
     | surge:start` boots the HTTP surface and the userbot pump together (app
     | booted once, non-blocking). No manual wiring: PumpProcess registers itself
-    | as a Surge process when Surge is installed. Set `autostart` to false to
-    | opt out (e.g. to run the pump via `client:start` instead).
+    | as a Surge process when Surge is installed, on every Surge server: Swoole
+    | forks it, RoadRunner and FrankenPHP run it with the PHP CLI binary (which
+    | then needs the swoole extension). Set `autostart` to false to opt out
+    | (e.g. to run the pump via `client:start` instead).
     |
     | `sessions`: which sessions the pump boots - one reader coroutine each, on
     | one shared runtime. Empty = every session in 'sessions' above (plus
