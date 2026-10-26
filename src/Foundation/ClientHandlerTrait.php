@@ -746,6 +746,31 @@ trait ClientHandlerTrait
         return $this->addListen('UPDATE', 'bot_stars_subscription', $action);
     }
 
+    public function onWalletState(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'wallet_state', $action);
+    }
+
+    public function onWalletTransaction(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'wallet_transaction', $action);
+    }
+
+    public function onWalletGaslessInfo(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'wallet_gasless_info', $action);
+    }
+
+    public function onTonConnectSession(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'ton_connect_session', $action);
+    }
+
+    public function onTonConnectDisconnect(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'ton_connect_disconnect', $action);
+    }
+
     public function onUpdate(Closure|array|string $action)
     {
         return $this->addListen('UPDATE', '*', $action)->fallback();

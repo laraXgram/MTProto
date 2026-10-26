@@ -9,7 +9,7 @@ namespace LaraGram\MTProto\Entities;
  *
  * Covers every Bot-API entity type. Some are output-only (auto-detected by the
  * server from plain text - mention, hashtag, cashtag, bot_command, url, email,
- * phone_number, bank_card), so they appear in received messages but are never
+ * phone_number, bank_card, ton_address), so they appear in received messages but are never
  * something a sender marks up. `date_time` is Bot-API-only with no MTProto
  * constructor. `blockquote`/`expandable_blockquote` share one TL constructor,
  * disambiguated by its `collapsed` flag.
@@ -26,6 +26,7 @@ final class EntityType
         'email'          => 'messageEntityEmail',
         'phone_number'   => 'messageEntityPhone',
         'bank_card'      => 'messageEntityBankCard',
+        'ton_address'    => 'messageEntityTonAddress',
         'bold'           => 'messageEntityBold',
         'italic'         => 'messageEntityItalic',
         'underline'      => 'messageEntityUnderline',
@@ -51,6 +52,7 @@ final class EntityType
         'messageEntityEmail'       => 'email',
         'messageEntityPhone'       => 'phone_number',
         'messageEntityBankCard'    => 'bank_card',
+        'messageEntityTonAddress'  => 'ton_address',
         'messageEntityBold'        => 'bold',
         'messageEntityItalic'      => 'italic',
         'messageEntityUnderline'   => 'underline',

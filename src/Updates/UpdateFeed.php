@@ -862,6 +862,13 @@ class UpdateFeed
             'updateEphemeralBotCallbackQuery' => $this->dispatchEvent('ephemeralCallbackQuery', $wrapped),
             'updateBotStarsSubscription' => $this->dispatchEvent('botStarsSubscription', $wrapped),
 
+            // ── Wallet & TON Connect ──
+            'updateWalletState' => $this->dispatchEvent('walletState', $wrapped),
+            'updateSentWalletTransaction' => $this->dispatchEvent('walletTransaction', $wrapped),
+            'updateWalletGaslessInfo' => $this->dispatchEvent('walletGaslessInfo', $wrapped),
+            'updateWalletTonConnectSession' => $this->dispatchEvent('tonConnectSession', $wrapped),
+            'updateWalletTonConnectPendingDisconnect' => $this->dispatchEvent('tonConnectDisconnect', $wrapped),
+
             default => null,
         };
 

@@ -209,6 +209,12 @@ enum ClientType: string
         'updateDeleteEphemeralMessages' => 'deleted_ephemeral_messages',
         'updateEphemeralBotCallbackQuery' => 'ephemeral_callback',
         'updateBotStarsSubscription' => 'bot_stars_subscription',
+
+        'updateWalletState' => 'wallet_state',
+        'updateSentWalletTransaction' => 'wallet_transaction',
+        'updateWalletGaslessInfo' => 'wallet_gasless_info',
+        'updateWalletTonConnectSession' => 'ton_connect_session',
+        'updateWalletTonConnectPendingDisconnect' => 'ton_connect_disconnect',
     ];
 
     const MESSAGE_CONSTRUCTORS = [
