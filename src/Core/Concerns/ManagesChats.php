@@ -26,7 +26,7 @@ trait ManagesChats
         }
 
         return $this->invoke('messages.deleteChatUser', [
-            'chat_id' => $input['chat_id'],
+            'chat_id' => $this->basicChatId($input, __FUNCTION__),
             'user_id' => $user,
         ]);
     }
@@ -61,7 +61,7 @@ trait ManagesChats
         }
 
         return $this->invoke('messages.deleteChatUser', [
-            'chat_id' => $input['chat_id'],
+            'chat_id' => $this->basicChatId($input, __FUNCTION__),
             'user_id' => $user,
         ]);
     }
@@ -99,7 +99,7 @@ trait ManagesChats
         }
 
         return $this->invoke('messages.editChatAdmin', [
-            'chat_id' => $input['chat_id'],
+            'chat_id' => $this->basicChatId($input, __FUNCTION__),
             'user_id' => $user,
             'is_admin' => true,
         ]);
@@ -119,7 +119,7 @@ trait ManagesChats
         }
 
         return $this->invoke('messages.editChatAdmin', [
-            'chat_id' => $input['chat_id'],
+            'chat_id' => $this->basicChatId($input, __FUNCTION__),
             'user_id' => $user,
             'is_admin' => false,
         ]);
@@ -143,7 +143,7 @@ trait ManagesChats
         $result = null;
         foreach ($list as $user) {
             $result = $this->invoke('messages.addChatUser', [
-                'chat_id' => $input['chat_id'],
+                'chat_id' => $this->basicChatId($input, __FUNCTION__),
                 'user_id' => $user,
                 'fwd_limit' => $fwdLimit,
             ]);
@@ -173,7 +173,7 @@ trait ManagesChats
         }
 
         return $this->invoke('messages.deleteChatUser', [
-            'chat_id' => $input['chat_id'],
+            'chat_id' => $this->basicChatId($input, __FUNCTION__),
             'user_id' => 'me',
         ]);
     }
@@ -209,9 +209,13 @@ trait ManagesChats
 
     public function deleteChat(string|int|array $peer): mixed
     {
-        $this->assertChannel($peer, 'deleteChat');
+        $input = $this->inputPeerFor($peer);
 
-        return $this->invoke('channels.deleteChannel', ['channel' => $peer]);
+        if ($this->isChannelInput($input)) {
+            return $this->invoke('channels.deleteChannel', ['channel' => $peer]);
+        }
+
+        return $this->invoke('messages.deleteChat', ['chat_id' => $this->basicChatId($input, __FUNCTION__)]);
     }
 
     public function setChatTitle(string|int|array $peer, string $title): mixed
@@ -222,7 +226,7 @@ trait ManagesChats
             return $this->invoke('channels.editTitle', ['channel' => $peer, 'title' => $title]);
         }
 
-        return $this->invoke('messages.editChatTitle', ['chat_id' => $input['chat_id'], 'title' => $title]);
+        return $this->invoke('messages.editChatTitle', ['chat_id' => $this->basicChatId($input, __FUNCTION__), 'title' => $title]);
     }
 
     public function setChatDescription(string|int|array $peer, string $about): mixed
@@ -266,14 +270,15 @@ trait ManagesChats
 
     public function unpinAllMessages(string|int|array $peer): mixed
     {
-        return $this->invoke('messages.unpinAllMessages', ['peer' => $peer]);
+        return $this->drainAffectedHistory(fn () => $this->invoke('messages.unpinAllMessages', ['peer' => $peer]));
     }
 
     /**
-     * @param list<int> $ids
+     * @param int|list<int> $ids
      */
-    public function deleteChatMessages(string|int|array $peer, array $ids, bool $revoke = true): mixed
+    public function deleteChatMessages(string|int|array $peer, int|array $ids, bool $revoke = true): mixed
     {
+        $ids = is_array($ids) ? $ids : [$ids];
         $input = $this->inputPeerFor($peer);
 
         if ($this->isChannelInput($input)) {
@@ -416,6 +421,95 @@ trait ManagesChats
     }
 
     /**
+     * Approve a user's request to join.
+     */
+    public function approveJoinRequest(string|int|array $peer, string|int|array $user): mixed
+    {
+        return $this->invoke('messages.hideChatJoinRequest', ['peer' => $peer, 'user_id' => $user, 'approved' => true]);
+    }
+
+    public function declineJoinRequest(string|int|array $peer, string|int|array $user): mixed
+    {
+        return $this->invoke('messages.hideChatJoinRequest', ['peer' => $peer, 'user_id' => $user]);
+    }
+
+    /**
+     * Approve every pending join request, or only those made through `$link`.
+     */
+    public function approveAllJoinRequests(string|int|array $peer, ?string $link = null): mixed
+    {
+        return $this->invoke('messages.hideAllChatJoinRequests', array_filter(
+            ['peer' => $peer, 'link' => $link, 'approved' => true],
+            static fn ($value): bool => $value !== null,
+        ));
+    }
+
+    public function declineAllJoinRequests(string|int|array $peer, ?string $link = null): mixed
+    {
+        return $this->invoke('messages.hideAllChatJoinRequests', array_filter(
+            ['peer' => $peer, 'link' => $link],
+            static fn ($value): bool => $value !== null,
+        ));
+    }
+
+    /**
+     * Preview a chat from its invite link or hash without joining it.
+     */
+    public function checkInviteLink(string $link): mixed
+    {
+        $reference = $this->requireResolver()->parseReference($link);
+
+        return $this->invoke('messages.checkChatInvite', [
+            'hash' => $reference['kind'] === 'invite' ? $reference['value'] : $link,
+        ]);
+    }
+
+    /**
+     * Upgrade a basic group to a supergroup.
+     */
+    public function convertToSupergroup(string|int|array $peer): mixed
+    {
+        return $this->invoke('messages.migrateChat', [
+            'chat_id' => $this->basicChatId($this->inputPeerFor($peer), __FUNCTION__),
+        ]);
+    }
+
+    /**
+     * Set the rank shown next to a member's name.
+     */
+    public function setChatMemberRank(string|int|array $peer, string|int|array $user, string $rank): mixed
+    {
+        return $this->invoke('messages.editChatParticipantRank', [
+            'peer' => $peer,
+            'participant' => $user,
+            'rank' => $rank,
+        ]);
+    }
+
+    /**
+     * Delete every message a member sent in a supergroup.
+     */
+    public function deleteChatMemberMessages(string|int|array $peer, string|int|array $user): mixed
+    {
+        $this->assertChannel($peer, __FUNCTION__);
+
+        return $this->drainAffectedHistory(fn () => $this->invoke('channels.deleteParticipantHistory', [
+            'channel' => $peer,
+            'participant' => $user,
+        ]));
+    }
+
+    public function markChatUnread(string|int|array $peer, bool $unread = true): mixed
+    {
+        return $this->invoke('messages.markDialogUnread', ['peer' => $peer, 'unread' => $unread]);
+    }
+
+    public function pinChat(string|int|array $peer, bool $pinned = true): mixed
+    {
+        return $this->invoke('messages.toggleDialogPin', ['peer' => $peer, 'pinned' => $pinned]);
+    }
+
+    /**
      * @param string|int|array|list<string|int|array> $peers
      */
     private function moveToFolder(string|int|array $peers, int $folderId): mixed
@@ -436,7 +530,7 @@ trait ManagesChats
             return $this->invoke('channels.editPhoto', ['channel' => $peer, 'photo' => $photo]);
         }
 
-        return $this->invoke('messages.editChatPhoto', ['chat_id' => $input['chat_id'], 'photo' => $photo]);
+        return $this->invoke('messages.editChatPhoto', ['chat_id' => $this->basicChatId($input, __FUNCTION__), 'photo' => $photo]);
     }
 
     private function isChannelInput(array $input): bool
@@ -450,6 +544,18 @@ trait ManagesChats
     private function inputPeerFor(string|int|array $peer): array
     {
         return $this->requireResolver()->resolveInputPeer($peer);
+    }
+
+    /**
+     * The chat id of a basic group's input peer.
+     */
+    private function basicChatId(array $input, string $method): int
+    {
+        if (($input['_'] ?? '') !== 'inputPeerChat') {
+            throw new MTProtoException("{$method}() requires a group, supergroup or channel peer.");
+        }
+
+        return (int) $input['chat_id'];
     }
 
     private function assertChannel(string|int|array $peer, string $method): void

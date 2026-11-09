@@ -45,6 +45,8 @@ final class TypeMap
         'TextWithEntities' => 'array|string',
         'InputCheckPasswordSRP' => 'array|string',
         'DataJSON' => 'mixed',
+        'ReplyMarkup' => 'mixed',
+        'InputReplyTo' => 'array|int',
     ];
 
     /**

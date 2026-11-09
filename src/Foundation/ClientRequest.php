@@ -105,7 +105,7 @@ use LaraGram\Support\Traits\Macroable;
  * @method mixed sendRichMessage(string|int $peer, string $content, string $format = 'markdown', array $params = [])
  * @method mixed forwardMessages(string|int $fromPeer, string|int $toPeer, int|array $ids, array $params = [])
  * @method mixed copyMessages(string|int $fromPeer, string|int $toPeer, int|array $ids, array $params = [])
- * @method mixed editMessage(string|int $peer, int $id, ?string $message = null, array $params = [])
+ * @method mixed editMessage(string|int $peer, int $id, ?string $message = null, array $params = [], ?string $parse_mode = null)
  * @method mixed getMessages(string|int $peer, int|array $ids)
  * @method mixed markAsRead(string|int $peer, int $maxId = 0)
  * @method mixed sendChatAction(string|int $peer, string $action = 'typing', array $params = [])
@@ -147,6 +147,188 @@ use LaraGram\Support\Traits\Macroable;
  * @method mixed getWidgetPublicData(string|int $peer, int $msgId, int $hash = 0)
  * @method string|null widgetHtml(array|TLObject $source)
  * @method mixed transcribeAudioFile(string|array $file)
+ * @method ?array getFileInfo(TLObject|array $media, ?string $thumbSize = null)
+ * @method \Generator iterateAdminLog(array|string|int $peer, string $query = '', array $params = [], ?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateBlockedUsers(?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateCommonChats(array|string|int $user, ?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateDialogs(?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateForumTopics(array|string|int $peer, ?int $limit = null, int $pageSize = 100, string $query = '')
+ * @method \Generator iterateHistory(array|string|int $peer, ?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateJoinRequests(array|string|int $peer, ?int $limit = null, int $pageSize = 100, string $query = '')
+ * @method \Generator iterateParticipants(array|string|int $peer, string $filter = 'recent', string $q = '', int $pageSize = 200)
+ * @method \Generator iterateReplies(array|string|int $peer, int $msgId, ?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateSavedStarGifts(array|string|int $peer = 'me', ?int $limit = null, int $pageSize = 50, array $params = [])
+ * @method \Generator iterateSearch(array|string|int $peer, string $query = '', array $params = [], ?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateStarsTransactions(array|string|int $peer = 'me', ?int $limit = null, ?string $direction = null, int $pageSize = 50, bool $ton = false)
+ * @method \Generator iterateTakeoutHistory(int $takeoutId, array|string|int $peer, ?int $limit = null, int $pageSize = 100)
+ * @method \Generator iterateWalletTransactions(?int $limit = null, ?string $direction = null, int $pageSize = 50)
+ * @method array getCurrencyRates()
+ * @method array getMe()
+ * @method array getTonConnectSessions()
+ * @method array sendSecretMessage(int $chatId, string $text, int $ttl = 0)
+ * @method array startSecretChat(int $userId)
+ * @method array takeoutContacts(int $takeoutId)
+ * @method bool checkBotUsername(string $username, bool $additional = false)
+ * @method bool finishTakeout(int $takeoutId, bool $success = true)
+ * @method int downloadToFile(array $location, int $dcId, string $path, int $size = 0)
+ * @method int initTakeout(array $opts = [])
+ * @method mixed addBotUsername(array|string|int $bot, string $username)
+ * @method mixed addChatMembers(array|string|int $peer, array|string|int $users, int $fwdLimit = 100)
+ * @method mixed addContact(array|string|int $user, string $firstName, string $lastName = '', string $phone = '')
+ * @method mixed answerCallback(int $queryId, string $text = '', bool $alert = false, ?string $url = null, int $cacheTime = 0)
+ * @method mixed answerInlineQuery(int $queryId, array $results, array $params = [])
+ * @method mixed answerPreCheckout(int $queryId, ?string $error = null)
+ * @method mixed answerShipping(int $queryId, array $options = [], ?string $error = null)
+ * @method mixed appendChecklistItems(array|string|int $peer, int $msgId, array $items, int $startId = 1)
+ * @method mixed approveAllCommunityPeerLinks(array|string|int $community, bool $reject = false)
+ * @method mixed approveAllJoinRequests(array|string|int $peer, ?string $link = null)
+ * @method mixed approveCommunityPeerLink(array|string|int $community, array|string|int $peer, bool $reject = false)
+ * @method mixed approveJoinRequest(array|string|int $peer, array|string|int $user)
+ * @method mixed checkInviteLink(string $link)
+ * @method mixed clearAllDrafts()
+ * @method mixed closeForumTopic(array|string|int $peer, int $topicId, bool $closed = true)
+ * @method mixed closePoll(array|string|int $peer, int $msgId, ?int $pollId = null, array $params = [])
+ * @method mixed closeTonConnectSession(int $sessionId)
+ * @method mixed composeRichMessageWithAI(array $text, array $params = [])
+ * @method mixed convertStarGift(array|string|int $gift)
+ * @method mixed convertToSupergroup(array|string|int $peer)
+ * @method mixed createChannel(string $title, string $about = '')
+ * @method mixed createCommunity(string $title, array|string|int $peer, ?string $about = null, bool $hidden = false)
+ * @method mixed createForumTopic(array|string|int $peer, string $title, array $params = [])
+ * @method mixed createGroup(string $title, array $users = [])
+ * @method mixed createSupergroup(string $title, string $about = '')
+ * @method mixed declineAllJoinRequests(array|string|int $peer, ?string $link = null)
+ * @method mixed declineJoinRequest(array|string|int $peer, array|string|int $user)
+ * @method mixed deleteAllWelcomeMessages(array|string|int $peer)
+ * @method mixed deleteChat(array|string|int $peer)
+ * @method mixed deleteChatMemberMessages(array|string|int $peer, array|string|int $user)
+ * @method mixed deleteChatMessages(array|string|int $peer, array|int $ids, bool $revoke = true)
+ * @method mixed deleteChatPhoto(array|string|int $peer)
+ * @method mixed deleteContacts(array|string|int $users)
+ * @method mixed deleteEphemeral(array|string|int|null $peer, array|string|int $receiver, int $id)
+ * @method mixed deleteForumTopic(array|string|int $peer, int $topicId)
+ * @method mixed deleteHistory(array|string|int $peer, int $maxId = 0, bool $forEveryone = false)
+ * @method mixed deleteInviteLink(array|string|int $peer, string $link)
+ * @method mixed deleteProfilePhotos(array $photos)
+ * @method mixed deleteScheduledMessages(array|string|int $peer, array|int $ids)
+ * @method mixed deleteStarGift(array|string|int $gift)
+ * @method mixed deleteStories(array|string|int $peer, array|int $ids)
+ * @method mixed deleteWelcomeMessage(array|string|int $peer, int $id)
+ * @method mixed demoteChatMember(array|string|int $peer, array|string|int $user)
+ * @method mixed editEphemeral(array|string|int|null $peer, array|string|int $receiver, int $id, array $params = [])
+ * @method mixed editFactCheck(array|string|int $peer, int $msgId, string $text)
+ * @method mixed editForumTopic(array|string|int $peer, int $topicId, array $params = [])
+ * @method mixed editInviteLink(array|string|int $peer, string $link, array $params = [])
+ * @method mixed editStory(array|string|int $peer, int $id, array $params = [])
+ * @method mixed exportInviteLink(array|string|int $peer, array $params = [])
+ * @method mixed exportWalletSecretPhrase(?string $password = null)
+ * @method mixed getAllDrafts()
+ * @method mixed getBoostsStatus(array|string|int $peer)
+ * @method mixed getBotCommands(array|string $scope = 'default', string $langCode = '')
+ * @method mixed getChatMember(array|string|int $peer, array|string|int $user)
+ * @method mixed getCommunityParticipantJoinedChats(array|string|int $community, array|string|int $participant)
+ * @method mixed getCommunityPeerLinkRequests(array|string|int $community, string $offset = '', int $limit = 100)
+ * @method mixed getContacts()
+ * @method mixed getEphemeralCallbackAnswer(array|string|int $peer, int $id, ?string $data = null)
+ * @method mixed getForumTopics(array|string|int $peer, array $params = [])
+ * @method mixed getForumTopicsById(array|string|int $peer, array|int $topicIds)
+ * @method mixed getInviteLinks(array|string|int $peer, array $params = [])
+ * @method mixed getJoinedCommunities()
+ * @method mixed getMessageReactions(array|string|int $peer, array|int $ids)
+ * @method mixed getMessageReactionsList(array|string|int $peer, int $msgId, string|int|null $reaction = null, string $offset = '', int $limit = 50)
+ * @method mixed getMyBoosts()
+ * @method mixed getPeerStories(array|string|int $peer)
+ * @method mixed getPollResults(array|string|int $peer, int $msgId)
+ * @method mixed getPrivacyRule(array|string $key)
+ * @method mixed getScheduledMessages(array|string|int $peer, array|int|null $ids = null)
+ * @method mixed getStarGiftWithdrawalUrl(array|string|int $gift, string $password)
+ * @method mixed getStarGifts(int $hash = 0)
+ * @method mixed getStarsStatus(array|string|int $peer = 'me', bool $ton = false)
+ * @method mixed getStickerSetByName(string $name, int $hash = 0)
+ * @method mixed getStories(array|string|int $peer, array|int $ids)
+ * @method mixed getUniqueStarGift(string $slug)
+ * @method mixed getUserBoosts(array|string|int $peer, array|string|int $user)
+ * @method mixed getUserPhotos(array|string|int $user = 'me', int $offset = 0, int $limit = 100)
+ * @method mixed getWallet()
+ * @method mixed getWalletAddresses(array $users = [], array $addresses = [], bool $force = false)
+ * @method mixed getWalletNfts(string $offset = '', int $limit = 50)
+ * @method mixed getWalletTransactions(string $offset = '', int $limit = 50, ?string $direction = null)
+ * @method mixed getWelcomeMessages(array|string|int $peer, int $hash = 0)
+ * @method mixed hideForumTopic(array|string|int $peer, int $topicId, bool $hidden = true)
+ * @method mixed importContact(string $phone, string $firstName, string $lastName = '')
+ * @method mixed invoke(string $method, array $params = [])
+ * @method mixed invokeWithTakeout(int $takeoutId, string $method, array $params = [])
+ * @method mixed joinChat(array|string|int $peer)
+ * @method mixed leaveChat(array|string|int $peer)
+ * @method mixed markChatUnread(array|string|int $peer, bool $unread = true)
+ * @method mixed markMentionsRead(array|string|int $peer, ?int $topMsgId = null)
+ * @method mixed markReactionsRead(array|string|int $peer, ?int $topMsgId = null)
+ * @method mixed pinChat(array|string|int $peer, bool $pinned = true)
+ * @method mixed pinForumTopic(array|string|int $peer, int $topicId, bool $pinned = true)
+ * @method mixed pinMessage(array|string|int $peer, int $id, bool $silent = false, bool $oneSide = false)
+ * @method mixed pinStory(array|string|int $peer, array|int $ids, bool $pinned = true)
+ * @method mixed readMessageContents(array|string|int $peer, array|int $ids)
+ * @method mixed readStories(array|string|int $peer, int $maxId)
+ * @method mixed removeBotUsername(array|string|int $bot, string $username)
+ * @method mixed reorderForumTopics(array|string|int $peer, array $order, bool $force = false)
+ * @method mixed reportEphemeral(array|string|int $peer, int $id, string $option, string $message = '')
+ * @method mixed requestChatJoinWebView(int $queryId, string $platform, array $params = [])
+ * @method mixed resetBotCommands(array|string $scope = 'default', string $langCode = '')
+ * @method mixed resetShareTheme(array|string|int $peer = 'me')
+ * @method mixed revokeInviteLink(array|string|int $peer, string $link)
+ * @method mixed saveDraft(array|string|int $peer, string $message = '', array $params = [])
+ * @method mixed saveStarGift(array|string|int $gift, bool $unsave = false)
+ * @method mixed searchGlobal(string $query = '', array $params = [])
+ * @method mixed searchMessages(array|string|int $peer, string $query = '', array $params = [])
+ * @method mixed sendAlbum(array|string|int $peer, array $items, array $params = [])
+ * @method mixed sendChecklist(array|string|int $peer, string $title, array $items, array $params = [])
+ * @method mixed sendContact(array|string|int $peer, string $phoneNumber, string $firstName, array $params = [])
+ * @method mixed sendDice(array|string|int $peer, string $emoticon = '🎲', array $params = [])
+ * @method mixed sendEphemeral(array|string|int|null $peer, array|string|int $receiver, string $message, array $params = [])
+ * @method mixed sendLocation(array|string|int $peer, float $lat, float $long, array $params = [])
+ * @method mixed sendMedia(array|string|int $peer, array $media, ?string $message = null, array $params = [])
+ * @method mixed sendMediaById(array|string|int $peer, string $fileId, ?string $message = null, array $params = [])
+ * @method mixed sendPaidMedia(array|string|int $peer, int $starsAmount, array $mediaList, ?string $message = null, array $params = [])
+ * @method mixed sendPaidReaction(array|string|int $peer, int $msgId, int $count = 1)
+ * @method mixed sendPoll(array|string|int $peer, string $question, array $answers, array $params = [])
+ * @method mixed sendScheduledMessages(array|string|int $peer, array|int $ids)
+ * @method mixed sendTopicMessage(array|string|int $peer, int $topicId, string $message, array $params = [])
+ * @method mixed sendVenue(array|string|int $peer, float $lat, float $long, string $title, string $address, array $params = [])
+ * @method mixed sendWelcomeMessage(array|string|int $peer, array|string|int $receiver, string $message, array $params = [])
+ * @method mixed setBotCommands(array $commands, array|string $scope = 'default', string $langCode = '')
+ * @method mixed setBotInfo(array $params = [])
+ * @method mixed setBotMenuButton(array|string|int $user, array|string $button = 'commands')
+ * @method mixed setChatDescription(array|string|int $peer, string $about)
+ * @method mixed setChatMemberRank(array|string|int $peer, array|string|int $user, string $rank)
+ * @method mixed setChatPhoto(array|string|int $peer, string $path)
+ * @method mixed setChatTitle(array|string|int $peer, string $title)
+ * @method mixed setCustomVerification(array|string|int $peer, bool $enabled = true, ?string $description = null, array|string|int|null $bot = null)
+ * @method mixed setDefaultAdminRights(array|string $rights, bool $forChannels = false)
+ * @method mixed setEmojiStatus(array|int|null $emoji, int $until = 0)
+ * @method mixed setOnline(bool $online = true)
+ * @method mixed setPrivacyRule(array|string $key, array|string $rules)
+ * @method mixed setShareThemeBackdrop(array|string|int $peer, ?int $backdropId = null, array $emojis = [])
+ * @method mixed setShareThemeGift(array|string|int $peer, array|string|int $gift)
+ * @method mixed setUsername(string $username)
+ * @method mixed takeout(callable $callback, array $opts = [])
+ * @method mixed toggleChecklistItems(array|string|int $peer, int $msgId, array $completed = [], array $incompleted = [])
+ * @method mixed toggleCommunityCollapsed(array|string|int $community, bool $collapsed = true)
+ * @method mixed toggleCommunityParticipantBanned(array|string|int $community, array|string|int $participant, bool $unban = false)
+ * @method mixed toggleCommunityPeerLink(array|string|int $community, array|string|int $peer, bool $visible = false, bool $hidden = false, bool $deleted = false)
+ * @method mixed toggleForum(array|string|int $peer, bool $enabled = true, bool $tabs = false, bool $sidebar = false)
+ * @method mixed toggleSuggestedPost(array|string|int $peer, int $msgId, bool $accept = true, array $params = [])
+ * @method mixed toncenter(string $endpoint, array|string|null $query = null, array|string|null $payload = null, bool $post = false)
+ * @method mixed transferStarGift(array|string|int $gift, array|string|int $to)
+ * @method mixed translateMessages(array|string|int $peer, array|int $ids, string $toLang)
+ * @method mixed translateRichMessage(string $toLang, array $params = [])
+ * @method mixed unbanChatMember(array|string|int $peer, array|string|int $user)
+ * @method mixed unpinAllMessages(array|string|int $peer)
+ * @method mixed unpinMessage(array|string|int $peer, int $id)
+ * @method mixed updateProfile(array $params)
+ * @method mixed voteInPoll(array|string|int $peer, int $msgId, array|string|int $options)
+ * @method mixed withdrawStarGift(array|string|int $gift, string $password, bool $keepOnProfile = false)
+ * @method string downloadToMemory(array $location, int $dcId, int $size = 0)
+ * @method string fileId(array $media)
  *
  * @mixin \LaraGram\MTProto\Generated\ClientIdeHelper
  */
@@ -274,11 +456,39 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Get the inline query string.
+     * Without arguments, get this update's inline query string. With a `$bot`,
+     * ask that bot for inline results, like {@see Client::inlineQuery()}.
      */
-    public function inlineQuery(): ?string
-    {
+    public function inlineQuery(
+        string|int|array|null $bot = null,
+        string $query = '',
+        string|int|array $peer = 'me',
+        string $offset = '',
+        ?array $location = null,
+    ): mixed {
+        if ($bot !== null) {
+            return $this->client()->inlineQuery($bot, $query, $peer, $offset, $location);
+        }
+
         return $this->data['query'] ?? null;
+    }
+
+    /**
+     * Reply to this update's message in the same chat. Extra
+     * `messages.sendMessage` params (parse_mode, reply_markup, ...) pass through.
+     */
+    public function reply(string $message, array $params = []): mixed
+    {
+        $peer = $this->chatId();
+        if ($peer === null) {
+            throw new \RuntimeException('No chat on this update to reply to');
+        }
+
+        return $this->client()->invoke('messages.sendMessage', array_merge(array_filter([
+            'peer' => $peer,
+            'message' => $message,
+            'reply_to' => $this->messageId(),
+        ], static fn ($value): bool => $value !== null), $params));
     }
 
     /**
@@ -323,7 +533,7 @@ class ClientRequest implements ProvidesListenContext
      */
     public function messageId(): ?int
     {
-        $id = $this->messageArray()['id'] ?? $this->data['id'] ?? null;
+        $id = $this->messageArray()['id'] ?? $this->data['id'] ?? $this->data['msg_id'] ?? null;
 
         return $id !== null ? (int)$id : null;
     }
@@ -374,13 +584,21 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Download the media attached to this update's message.
+     * Download media and return its bytes: `$media` when given, otherwise the
+     * media attached to this update's message.
      *
+     * @param array|TLObject|string|null $media Media to download. A string is
+     *        read as the thumb size, so `downloadMedia('x')` targets this update.
      * @param string|null $thumbSize Photo size type (e.g. 'x', 'y', 'w'). Defaults to largest.
      * @return string The file bytes
      */
-    public function downloadMedia(?string $thumbSize = null): string
+    public function downloadMedia(array|TLObject|string|null $media = null, ?string $thumbSize = null): string
     {
+        if (is_array($media) || $media instanceof TLObject) {
+            return $this->client()->downloadMedia($media, $thumbSize);
+        }
+
+        $thumbSize = $media ?? $thumbSize;
         $media = $this->mediaArray();
         if ($media === null) {
             throw new \RuntimeException('No media found in this update');
@@ -404,14 +622,32 @@ class ClientRequest implements ProvidesListenContext
     }
 
     /**
-     * Download the media to a file path.
+     * Download media to a file: `downloadMediaToFile($media, $path)`, or
+     * `downloadMediaToFile($path)` for the media attached to this update.
      *
-     * @param string $path Destination file path
+     * @param array|TLObject|string|null $media Media to download, or the
+     *        destination path to use this update's media.
+     * @param string|null $path Destination path, or the thumb size when `$media` is the path.
      * @param string|null $thumbSize Photo size type (e.g. 'x', 'y', 'w'). Defaults to largest.
      * @return int Bytes written
      */
-    public function downloadMediaToFile(string $path, ?string $thumbSize = null): int
+    public function downloadMediaToFile(array|TLObject|string|null $media = null, ?string $path = null, ?string $thumbSize = null): int
     {
+        if (is_array($media) || $media instanceof TLObject) {
+            if ($path === null) {
+                throw new \InvalidArgumentException('A destination path is required');
+            }
+
+            return $this->client()->downloadMediaToFile($media, $path, $thumbSize);
+        }
+
+        if (is_string($media)) {
+            [$path, $thumbSize] = [$media, $path ?? $thumbSize];
+        }
+        if ($path === null) {
+            throw new \InvalidArgumentException('A destination path is required');
+        }
+
         $media = $this->mediaArray();
         if ($media === null) {
             throw new \RuntimeException('No media found in this update');

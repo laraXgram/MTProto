@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Core\Concerns;
 
+use Generator;
+use LaraGram\MTProto\Exceptions\MTProtoException;
+
 /**
  * @mixin \LaraGram\MTProto\Core\Client
  */
@@ -17,6 +20,45 @@ trait HandlesStars
         }
 
         return $this->invoke('payments.getStarsStatus', $params);
+    }
+
+    /**
+     * Lazily yield Stars (or, with `$ton`, TON) transactions, newest first.
+     * `$direction` is "in", "out" or null for both.
+     *
+     * @return Generator<int, array>
+     */
+    public function iterateStarsTransactions(
+        string|int|array $peer = 'me',
+        ?int $limit = null,
+        ?string $direction = null,
+        int $pageSize = 50,
+        bool $ton = false,
+    ): Generator {
+        $params = ['peer' => $peer];
+
+        match ($direction) {
+            null => null,
+            'in' => $params['inbound'] = true,
+            'out' => $params['outbound'] = true,
+            default => throw new MTProtoException("Unknown Stars transaction direction: {$direction}"),
+        };
+        if ($ton) {
+            $params['ton'] = true;
+        }
+
+        return $this->pageByNextOffset('payments.getStarsTransactions', $params, 'history', $limit, $pageSize);
+    }
+
+    /**
+     * Lazily yield the gifts saved on a profile or channel. `$params` takes the
+     * `payments.getSavedStarGifts` filters (exclude_unique, sort_by_value, ...).
+     *
+     * @return Generator<int, array>
+     */
+    public function iterateSavedStarGifts(string|int|array $peer = 'me', ?int $limit = null, int $pageSize = 50, array $params = []): Generator
+    {
+        return $this->pageByNextOffset('payments.getSavedStarGifts', array_merge($params, ['peer' => $peer]), 'gifts', $limit, $pageSize);
     }
 
     public function getStarGifts(int $hash = 0): mixed
@@ -131,6 +173,33 @@ trait HandlesStars
         ];
 
         return $this->sendMedia($peer, $media, $message, $params);
+    }
+
+    /**
+     * @return Generator<int, array>
+     */
+    private function pageByNextOffset(string $method, array $params, string $key, ?int $limit, int $pageSize): Generator
+    {
+        $offset = '';
+        $yielded = 0;
+
+        do {
+            $take = $limit !== null ? min($pageSize, $limit - $yielded) : $pageSize;
+            if ($take <= 0) {
+                return;
+            }
+
+            $page = $this->invoke($method, array_merge($params, ['offset' => $offset, 'limit' => $take]));
+
+            foreach ($page[$key] ?? [] as $item) {
+                yield $item;
+                if (++$yielded === $limit) {
+                    return;
+                }
+            }
+
+            $offset = (string) ($page['next_offset'] ?? '');
+        } while ($offset !== '');
     }
 
     private function savedGift(int|string|array $gift): array

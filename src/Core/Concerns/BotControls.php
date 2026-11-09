@@ -41,6 +41,29 @@ trait BotControls
     }
 
     /**
+     * Confirm a pre-checkout query, or reject it by passing `$error`.
+     */
+    public function answerPreCheckout(int $queryId, ?string $error = null): mixed
+    {
+        return $this->invoke('messages.setBotPrecheckoutResults', $error === null
+            ? ['query_id' => $queryId, 'success' => true]
+            : ['query_id' => $queryId, 'error' => $error]);
+    }
+
+    /**
+     * Answer a shipping query with `shippingOption` objects, or reject it by
+     * passing `$error`.
+     *
+     * @param list<array> $options
+     */
+    public function answerShipping(int $queryId, array $options = [], ?string $error = null): mixed
+    {
+        return $this->invoke('messages.setBotShippingResults', $error === null
+            ? ['query_id' => $queryId, 'shipping_options' => array_values($options)]
+            : ['query_id' => $queryId, 'error' => $error]);
+    }
+
+    /**
      * @param array<int|string,mixed> $commands
      */
     public function setBotCommands(array $commands, string|array $scope = 'default', string $langCode = ''): mixed

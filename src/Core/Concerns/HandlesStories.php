@@ -11,22 +11,44 @@ use LaraGram\MTProto\Foundation\InputMedia;
  */
 trait HandlesStories
 {
+    /**
+     * Post a story from a local photo or video, or a prebuilt InputMedia.
+     * Recognised $params for a video path: duration, w, h.
+     */
     public function sendStory(string|int|array $peer, string|array $media, array $params = []): mixed
     {
-        $input = is_array($media) ? $media : InputMedia::uploadedPhoto($this->uploadFile($media));
+        $input = is_array($media) ? $media : $this->storyMedia($media, $params);
 
         $call = [
             'peer' => $peer,
             'media' => $input,
             'privacy_rules' => $params['privacy_rules'] ?? [['_' => 'inputPrivacyValueAllowAll']],
         ];
-        foreach (['caption', 'entities', 'period', 'pinned', 'noforwards', 'media_areas', 'albums'] as $k) {
+        foreach (['caption', 'entities', 'parse_mode', 'period', 'pinned', 'noforwards', 'media_areas', 'albums', 'fwd_modified', 'fwd_from_id', 'fwd_from_story', 'random_id'] as $k) {
             if (isset($params[$k])) {
                 $call[$k] = $params[$k];
             }
         }
 
         return $this->invoke('stories.sendStory', $call);
+    }
+
+    private function storyMedia(string $path, array $params): array
+    {
+        $mime = $this->guessMimeType($path);
+
+        if (!str_starts_with($mime, 'video/')) {
+            return InputMedia::uploadedPhoto($this->uploadFile($path));
+        }
+
+        return InputMedia::uploadedDocument($this->uploadFile($path), $mime, [
+            InputMedia::attrVideo(
+                (int) ($params['duration'] ?? 0),
+                (int) ($params['w'] ?? 0),
+                (int) ($params['h'] ?? 0),
+                supportsStreaming: true,
+            ),
+        ]);
     }
 
     public function editStory(string|int|array $peer, int $id, array $params = []): mixed

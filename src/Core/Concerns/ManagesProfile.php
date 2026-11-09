@@ -5,12 +5,31 @@ declare(strict_types=1);
 namespace LaraGram\MTProto\Core\Concerns;
 
 use LaraGram\MTProto\Auth\Authorization;
+use LaraGram\MTProto\Exceptions\MTProtoException;
 
 /**
  * @mixin \LaraGram\MTProto\Core\Client
  */
 trait ManagesProfile
 {
+    /** @var array<string,string> */
+    private const PRIVACY_KEYS = [
+        'last_seen' => 'inputPrivacyKeyStatusTimestamp',
+        'chat_invites' => 'inputPrivacyKeyChatInvite',
+        'calls' => 'inputPrivacyKeyPhoneCall',
+        'p2p_calls' => 'inputPrivacyKeyPhoneP2P',
+        'forwards' => 'inputPrivacyKeyForwards',
+        'profile_photo' => 'inputPrivacyKeyProfilePhoto',
+        'phone_number' => 'inputPrivacyKeyPhoneNumber',
+        'added_by_phone' => 'inputPrivacyKeyAddedByPhone',
+        'voice_messages' => 'inputPrivacyKeyVoiceMessages',
+        'about' => 'inputPrivacyKeyAbout',
+        'birthday' => 'inputPrivacyKeyBirthday',
+        'star_gifts_auto_save' => 'inputPrivacyKeyStarGiftsAutoSave',
+        'no_paid_messages' => 'inputPrivacyKeyNoPaidMessages',
+        'saved_music' => 'inputPrivacyKeySavedMusic',
+    ];
+
     public function setProfilePhoto(string $path): mixed
     {
         return $this->invoke('photos.uploadProfilePhoto', ['file' => $this->uploadFile($path)]);
@@ -64,6 +83,58 @@ trait ManagesProfile
             'last_name' => $lastName,
             'phone' => $phone,
         ]);
+    }
+
+    /**
+     * Add a contact by phone number. Importing many numbers gets accounts
+     * banned; only use it for numbers the account owner actually knows.
+     */
+    public function importContact(string $phone, string $firstName, string $lastName = ''): mixed
+    {
+        return $this->invoke('contacts.importContacts', [
+            'contacts' => [[
+                '_' => 'inputPhoneContact',
+                'client_id' => random_int(1, PHP_INT_MAX),
+                'phone' => $phone,
+                'first_name' => $firstName,
+                'last_name' => $lastName,
+            ]],
+        ]);
+    }
+
+    /**
+     * The privacy rules of a setting, such as "last_seen" or "phone_number".
+     */
+    public function getPrivacyRule(string|array $key): mixed
+    {
+        return $this->invoke('account.getPrivacy', ['key' => $this->privacyKey($key)]);
+    }
+
+    /**
+     * Change a privacy setting. `$rules` is "everyone", "contacts",
+     * "close_friends", "nobody", or a list of InputPrivacyRule objects.
+     */
+    public function setPrivacyRule(string|array $key, string|array $rules): mixed
+    {
+        return $this->invoke('account.setPrivacy', [
+            'key' => $this->privacyKey($key),
+            'rules' => is_array($rules) ? $rules : match (strtolower($rules)) {
+                'everyone' => [['_' => 'inputPrivacyValueAllowAll']],
+                'contacts' => [['_' => 'inputPrivacyValueAllowContacts'], ['_' => 'inputPrivacyValueDisallowAll']],
+                'close_friends' => [['_' => 'inputPrivacyValueAllowCloseFriends'], ['_' => 'inputPrivacyValueDisallowAll']],
+                'nobody' => [['_' => 'inputPrivacyValueDisallowAll']],
+                default => throw new MTProtoException("Unknown privacy rule: {$rules}"),
+            },
+        ]);
+    }
+
+    private function privacyKey(string|array $key): array
+    {
+        if (is_array($key)) {
+            return $key;
+        }
+
+        return ['_' => self::PRIVACY_KEYS[strtolower($key)] ?? throw new MTProtoException("Unknown privacy setting: {$key}")];
     }
 
     /**

@@ -45,9 +45,9 @@ trait HandlesTakeout
      */
     public function invokeWithTakeout(int $takeoutId, string $method, array $params = []): mixed
     {
-        return $this->invoke('invokeWithTakeoutId', [
+        return $this->invoke('invokeWithTakeout', [
             'takeout_id' => $takeoutId,
-            'query' => array_merge(['_' => $method], $params),
+            'query' => array_merge(['_' => $method], $this->getPreprocessor()->process($method, $params)),
         ]);
     }
 

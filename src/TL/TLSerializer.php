@@ -101,7 +101,12 @@ final class TLSerializer
                     $flagIndex = $param->getFlagIndex();
                     
                     if (isset($flags[$flagField])) {
-                        if (isset($object[$param->getName()])) {
+                        // A `true` flag is set by its value, so `false` leaves it off.
+                        $present = $param->getType() === 'true'
+                            ? !empty($object[$param->getName()])
+                            : isset($object[$param->getName()]);
+
+                        if ($present) {
                             // Set the bit if value is provided
                             $flags[$flagField] |= (1 << $flagIndex);
                         } else {

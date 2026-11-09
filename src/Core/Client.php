@@ -34,6 +34,7 @@ use LaraGram\MTProto\Core\Concerns\HandlesStars;
 use LaraGram\MTProto\Core\Concerns\HandlesDrafts;
 use LaraGram\MTProto\Core\Concerns\DownloadsMedia;
 use LaraGram\MTProto\Core\Concerns\MessagingExtras;
+use LaraGram\MTProto\Entities\EntityParser;
 use LaraGram\MTProto\Core\Concerns\HandlesWallet;
 use LaraGram\MTProto\Core\Concerns\HandlesWidgets;
 use LaraGram\MTProto\Core\Concerns\InteractsWithBots;
@@ -607,10 +608,9 @@ class Client
     }
 
     /**
-     * Low-level invoke - no parameter preprocessing, no peer caching.
+     * Upload a local file and return its input file for media requests.
      *
      * @param callable|null $progress
-     * @internal
      */
     public function uploadFile(string $path, ?string $fileName = null, ?callable $progress = null): array
     {
@@ -629,7 +629,7 @@ class Client
 
     /**
      * Send an uploaded photo. Extra `messages.sendMedia` params (parse_mode,
-     * reply_to_msg_id, reply_markup, silent, …) pass through $params.
+     * reply_to, reply_markup, silent, …) pass through $params.
      */
     public function sendPhoto(string|int|array $peer, string $path, ?string $message = null, array $params = []): mixed
     {
@@ -864,7 +864,16 @@ class Client
             isset($params['solution']) ? (string)$params['solution'] : null,
             isset($params['close_period']) ? (int)$params['close_period'] : null,
         );
-        foreach (['multiple_choice', 'public_voters', 'correct_answers', 'solution', 'close_period'] as $k) {
+        foreach (['open_answers', 'revoting_disabled', 'shuffle_answers', 'hide_results_until_close', 'subscribers_only'] as $flag) {
+            if (!empty($params[$flag])) {
+                $media['poll'][$flag] = true;
+            }
+            unset($params[$flag]);
+        }
+        if (isset($params['close_date'])) {
+            $media['poll']['close_date'] = (int)$params['close_date'];
+        }
+        foreach (['multiple_choice', 'public_voters', 'correct_answers', 'solution', 'close_period', 'close_date'] as $k) {
             unset($params[$k]);
         }
 
@@ -923,6 +932,8 @@ class Client
         }
 
         $inputPeer = is_array($peer) ? $peer : ($this->getResolver()?->resolveInputPeer($peer) ?? $peer);
+        $albumParseMode = $params['parse_mode'] ?? null;
+        unset($params['parse_mode']);
         $multiMedia = [];
 
         foreach ($items as $item) {
@@ -933,18 +944,44 @@ class Client
                 $media = $this->toResendableMedia($uploaded);
             }
 
-            $multiMedia[] = [
-                '_' => 'inputSingleMedia',
-                'media' => $media,
-                'random_id' => random_int(PHP_INT_MIN, PHP_INT_MAX),
-                'message' => $caption ?? '',
-            ];
+            $multiMedia[] = $this->albumEntry($media, $caption, is_array($item) ? $item : [], $albumParseMode);
         }
 
         return $this->invoke('messages.sendMultiMedia', array_merge([
             'peer' => $inputPeer,
             'multi_media' => $multiMedia,
         ], $params));
+    }
+
+    /**
+     * Build one `inputSingleMedia`, formatting its caption. An item's own
+     * `entities` or `parse_mode` win over the album's `parse_mode`.
+     */
+    private function albumEntry(array $media, ?string $caption, array $item, ?string $albumParseMode): array
+    {
+        $entry = [
+            '_' => 'inputSingleMedia',
+            'media' => $media,
+            'random_id' => random_int(PHP_INT_MIN, PHP_INT_MAX),
+            'message' => $caption ?? '',
+        ];
+
+        if (!empty($item['entities'])) {
+            $entry['entities'] = $item['entities'];
+
+            return $entry;
+        }
+
+        $parseMode = $item['parse_mode'] ?? $albumParseMode;
+        if ($caption !== null && $parseMode !== null) {
+            $parsed = (new EntityParser())->parse($caption, $parseMode);
+            $entry['message'] = $parsed['text'];
+            if ($parsed['entities'] !== []) {
+                $entry['entities'] = $parsed['entities'];
+            }
+        }
+
+        return $entry;
     }
 
     /**
@@ -967,16 +1004,17 @@ class Client
             return [FileId::toInputMedia((string)$item['file_id']), $caption];
         }
         if (isset($item['path'])) {
-            return [$this->autoInputMedia((string)$item['path'], (string)($item['type'] ?? '')), $caption];
+            return [$this->autoInputMedia((string)$item['path'], (string)($item['type'] ?? ''), $item), $caption];
         }
 
         throw new MTProtoException('Album item needs one of: path, file_id, media');
     }
 
     /**
-     * Upload a path and wrap it as a photo or document InputMedia by type/mime.
+     * Upload a path and wrap it as photo, video, audio or document InputMedia
+     * by type/mime. `$options` supplies duration, w, h, title and performer.
      */
-    private function autoInputMedia(string $path, string $type = ''): array
+    private function autoInputMedia(string $path, string $type = '', array $options = []): array
     {
         $mime = $this->guessMimeType($path);
         $isPhoto = $type === 'photo' || ($type === '' && str_starts_with($mime, 'image/') && $mime !== 'image/webp');
@@ -986,11 +1024,27 @@ class Client
         }
 
         $name = $this->files->basename($path);
+        $attributes = [InputMedia::attrFilename($name)];
+
+        if ($type === 'video' || ($type === '' && str_starts_with($mime, 'video/'))) {
+            array_unshift($attributes, InputMedia::attrVideo(
+                (int)($options['duration'] ?? 0),
+                (int)($options['w'] ?? 0),
+                (int)($options['h'] ?? 0),
+                supportsStreaming: true,
+            ));
+        } elseif ($type === 'audio' || ($type === '' && str_starts_with($mime, 'audio/'))) {
+            array_unshift($attributes, InputMedia::attrAudio(
+                (int)($options['duration'] ?? 0),
+                $options['title'] ?? null,
+                $options['performer'] ?? null,
+            ));
+        }
 
         return InputMedia::uploadedDocument(
             $this->uploadFile($path, $name),
             $mime ?: 'application/octet-stream',
-            [InputMedia::attrFilename($name)],
+            $attributes,
         );
     }
 

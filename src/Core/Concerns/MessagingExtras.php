@@ -23,6 +23,35 @@ trait MessagingExtras
         'upload_voice' => 'sendMessageUploadAudioAction',
         'upload_photo' => 'sendMessageUploadPhotoAction',
         'upload_document' => 'sendMessageUploadDocumentAction',
+        'record_round' => 'sendMessageRecordRoundAction',
+        'record_video_note' => 'sendMessageRecordRoundAction',
+        'upload_round' => 'sendMessageUploadRoundAction',
+        'upload_video_note' => 'sendMessageUploadRoundAction',
+        'choose_sticker' => 'sendMessageChooseStickerAction',
+        'choose_contact' => 'sendMessageChooseContactAction',
+        'find_location' => 'sendMessageGeoLocationAction',
+        'game' => 'sendMessageGamePlayAction',
+    ];
+
+    /** @var array<string,string> */
+    private const MESSAGE_FILTERS = [
+        'all' => 'inputMessagesFilterEmpty',
+        'photos' => 'inputMessagesFilterPhotos',
+        'videos' => 'inputMessagesFilterVideo',
+        'photo_video' => 'inputMessagesFilterPhotoVideo',
+        'documents' => 'inputMessagesFilterDocument',
+        'links' => 'inputMessagesFilterUrl',
+        'gifs' => 'inputMessagesFilterGif',
+        'voice' => 'inputMessagesFilterVoice',
+        'music' => 'inputMessagesFilterMusic',
+        'chat_photos' => 'inputMessagesFilterChatPhotos',
+        'round_voice' => 'inputMessagesFilterRoundVoice',
+        'round_video' => 'inputMessagesFilterRoundVideo',
+        'mentions' => 'inputMessagesFilterMyMentions',
+        'locations' => 'inputMessagesFilterGeo',
+        'contacts' => 'inputMessagesFilterContacts',
+        'pinned' => 'inputMessagesFilterPinned',
+        'polls' => 'inputMessagesFilterPoll',
     ];
 
     public function sendRichMessage(string|int|array $peer, string $content, string $format = 'markdown', array $params = []): mixed
@@ -80,11 +109,14 @@ trait MessagingExtras
         ]);
     }
 
-    public function editMessage(string|int|array $peer, int $id, ?string $message = null, array $params = []): mixed
+    public function editMessage(string|int|array $peer, int $id, ?string $message = null, array $params = [], ?string $parse_mode = null): mixed
     {
         $call = ['peer' => $peer, 'id' => $id];
         if ($message !== null) {
             $call['message'] = $message;
+        }
+        if ($parse_mode !== null) {
+            $call['parse_mode'] = $parse_mode;
         }
 
         return $this->invoke('messages.editMessage', array_merge($call, $params));
@@ -183,8 +215,14 @@ trait MessagingExtras
         return $this->invoke('channels.getParticipant', ['channel' => $peer, 'participant' => $user]);
     }
 
+    /**
+     * Search a chat. `$params['filter']` may be a name from
+     * {@see MESSAGE_FILTERS} (photos, links, ...) or a MessagesFilter object.
+     */
     public function searchMessages(string|int|array $peer, string $query = '', array $params = []): mixed
     {
+        $params = $this->withMessagesFilter($params);
+
         return $this->invoke('messages.search', array_merge([
             'peer' => $peer,
             'q' => $query,
@@ -202,6 +240,8 @@ trait MessagingExtras
 
     public function searchGlobal(string $query = '', array $params = []): mixed
     {
+        $params = $this->withMessagesFilter($params);
+
         return $this->invoke('messages.searchGlobal', array_merge([
             'q' => $query,
             'filter' => ['_' => 'inputMessagesFilterEmpty'],
@@ -239,7 +279,57 @@ trait MessagingExtras
             $call['revoke'] = true;
         }
 
-        return $this->invoke('messages.deleteHistory', $call);
+        return $this->drainAffectedHistory(fn () => $this->invoke('messages.deleteHistory', $call));
+    }
+
+    /**
+     * Mark every mention in a chat, or in one forum topic, as read.
+     */
+    public function markMentionsRead(string|int|array $peer, ?int $topMsgId = null): mixed
+    {
+        return $this->drainAffectedHistory(fn () => $this->invoke('messages.readMentions', array_filter(
+            ['peer' => $peer, 'top_msg_id' => $topMsgId],
+            static fn ($value): bool => $value !== null,
+        )));
+    }
+
+    /**
+     * Mark every reaction in a chat, or in one forum topic, as read.
+     */
+    public function markReactionsRead(string|int|array $peer, ?int $topMsgId = null): mixed
+    {
+        return $this->drainAffectedHistory(fn () => $this->invoke('messages.readReactions', array_filter(
+            ['peer' => $peer, 'top_msg_id' => $topMsgId],
+            static fn ($value): bool => $value !== null,
+        )));
+    }
+
+    /**
+     * Translate messages of a chat to `$toLang`.
+     *
+     * @param int|list<int> $ids
+     */
+    public function translateMessages(string|int|array $peer, int|array $ids, string $toLang): mixed
+    {
+        return $this->invoke('messages.translateText', [
+            'peer' => $peer,
+            'id' => is_array($ids) ? $ids : [$ids],
+            'to_lang' => $toLang,
+        ]);
+    }
+
+    /**
+     * Fetch a sticker or emoji set by its short name or t.me link.
+     */
+    public function getStickerSetByName(string $name, int $hash = 0): mixed
+    {
+        return $this->invoke('messages.getStickerSet', [
+            'stickerset' => [
+                '_' => 'inputStickerSetShortName',
+                'short_name' => preg_replace('~^(?:https?://)?t\.me/add(?:stickers|emoji)/~i', '', $name),
+            ],
+            'hash' => $hash,
+        ]);
     }
 
     /**
@@ -277,6 +367,38 @@ trait MessagingExtras
             'peer' => $peer,
             'id' => is_array($ids) ? $ids : [$ids],
         ]);
+    }
+
+    /**
+     * Repeat a `messages.affectedHistory` call until Telegram reports that
+     * nothing is left; large chats are processed one batch per call.
+     */
+    private function drainAffectedHistory(callable $call): mixed
+    {
+        $previous = PHP_INT_MAX;
+
+        do {
+            $result = $call();
+            $offset = is_array($result) ? (int) ($result['offset'] ?? 0) : 0;
+            $progressed = $offset < $previous;
+            $previous = $offset;
+        } while ($offset > 0 && $progressed);
+
+        return $result;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function withMessagesFilter(array $params): array
+    {
+        if (isset($params['filter']) && is_string($params['filter'])) {
+            $constructor = self::MESSAGE_FILTERS[strtolower($params['filter'])]
+                ?? throw new MTProtoException("Unknown message filter: {$params['filter']}");
+            $params['filter'] = ['_' => $constructor];
+        }
+
+        return $params;
     }
 
     /**

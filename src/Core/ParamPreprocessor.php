@@ -166,22 +166,9 @@ class ParamPreprocessor
             }
 
             if ($type === 'InputDialogPeer' && isset($params[$name])) {
-                if (!$this->isAlreadyTLObject($params[$name])) {
-                    $peer = $this->resolvePeerParam($params[$name], 'InputPeer');
-                    $params[$name] = [
-                        '_' => 'inputDialogPeer',
-                        'peer' => $peer,
-                    ];
-                }
-                if ($param->isVector() && is_array($params[$name])) {
-                    $params[$name] = array_map(function ($item) {
-                        if (!$this->isAlreadyTLObject($item)) {
-                            $peer = $this->resolvePeerParam($item, 'InputPeer');
-                            return ['_' => 'inputDialogPeer', 'peer' => $peer];
-                        }
-                        return $item;
-                    }, $params[$name]);
-                }
+                $params[$name] = $param->isVector() && is_array($params[$name]) && !$this->isAlreadyTLObject($params[$name])
+                    ? array_map(fn ($item) => $this->inputDialogPeer($item), $params[$name])
+                    : $this->inputDialogPeer($params[$name]);
                 continue;
             }
 
@@ -236,6 +223,21 @@ class ParamPreprocessor
     private function isAlreadyTLObject(mixed $value): bool
     {
         return is_array($value) && isset($value['_']);
+    }
+
+    /**
+     * Wrap a peer reference or InputPeer in an inputDialogPeer. Other TL
+     * objects (inputDialogPeer, inputDialogPeerFolder) pass through.
+     */
+    private function inputDialogPeer(mixed $value): mixed
+    {
+        if ($this->isAlreadyTLObject($value)) {
+            return str_starts_with((string) $value['_'], 'inputPeer')
+                ? ['_' => 'inputDialogPeer', 'peer' => $value]
+                : $value;
+        }
+
+        return ['_' => 'inputDialogPeer', 'peer' => $this->resolvePeerParam($value, 'InputPeer')];
     }
 
     /**

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Core\Concerns;
 
+use LaraGram\MTProto\Exceptions\MTProtoException;
+
 /**
  * @mixin \LaraGram\MTProto\Core\Client
  */
@@ -69,13 +71,19 @@ trait HandlesEngagement
     }
 
     /**
+     * Vote in a poll. An int option is the answer's position in the poll; a
+     * string option is its raw `option` bytes.
+     *
      * @param string|int|array<int,string|int> $options
      */
     public function voteInPoll(string|int|array $peer, int $msgId, string|int|array $options): mixed
     {
         $list = is_array($options) ? $options : [$options];
+        $known = array_filter($list, is_int(...)) !== []
+            ? array_column((array) ($this->pollFromMessage($peer, $msgId)['answers'] ?? []), 'option')
+            : [];
         $list = array_map(
-            static fn (string|int $o): string => is_int($o) ? chr($o) : $o,
+            static fn (string|int $o): string => is_int($o) ? ($known[$o] ?? chr($o)) : $o,
             $list,
         );
 
@@ -86,6 +94,34 @@ trait HandlesEngagement
         ]);
     }
 
+    /**
+     * Close a poll you sent so it stops accepting votes. Pass `$pollId` to skip
+     * looking it up. Extra `messages.editMessage` params pass through $params.
+     */
+    public function closePoll(string|int|array $peer, int $msgId, ?int $pollId = null, array $params = []): mixed
+    {
+        $pollId ??= $this->pollFromMessage($peer, $msgId)['id'] ?? null;
+        if ($pollId === null) {
+            throw new MTProtoException("Message {$msgId} does not contain a poll.");
+        }
+
+        return $this->invoke('messages.editMessage', array_merge([
+            'peer' => $peer,
+            'id' => $msgId,
+            'media' => [
+                '_' => 'inputMediaPoll',
+                'poll' => [
+                    '_' => 'poll',
+                    'id' => $pollId,
+                    'closed' => true,
+                    'creator' => true,
+                    'question' => ['_' => 'textWithEntities', 'text' => '', 'entities' => []],
+                    'answers' => [],
+                ],
+            ],
+        ], $params));
+    }
+
     public function getPollResults(string|int|array $peer, int $msgId): mixed
     {
         return $this->invoke('messages.getPollResults', [
@@ -93,6 +129,20 @@ trait HandlesEngagement
             'msg_id' => $msgId,
             'poll_hash' => 0,
         ]);
+    }
+
+    /**
+     * The `poll` object of a message, or null when it holds none.
+     */
+    private function pollFromMessage(string|int|array $peer, int $msgId): ?array
+    {
+        foreach ($this->getMessages($peer, $msgId)['messages'] ?? [] as $message) {
+            if (($message['id'] ?? null) === $msgId) {
+                return $message['media']['poll'] ?? null;
+            }
+        }
+
+        return null;
     }
 
     /**
