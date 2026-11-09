@@ -111,6 +111,11 @@ trait ClientHandlerTrait
         return $this->addListen('UPDATE', 'transcribed_audio', $action);
     }
 
+    public function onTranscribedAudioFile(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'transcribed_audio_file', $action);
+    }
+
     public function onGeoLiveViewed(Closure|array|string $action)
     {
         return $this->addListen('UPDATE', 'geo_live_viewed', $action);
@@ -134,6 +139,11 @@ trait ClientHandlerTrait
     public function onPaidMedia(Closure|array|string $action)
     {
         return $this->addListen('MESSAGE', 'paid_media', $action);
+    }
+
+    public function onWidget(Closure|array|string $action)
+    {
+        return $this->addListen('MESSAGE', 'widget', $action);
     }
 
     public function onTyping(Closure|array|string $action)
@@ -596,6 +606,11 @@ trait ClientHandlerTrait
         return $this->addListen('UPDATE', 'pinned_forum_topics', $action);
     }
 
+    public function onEditedForumTopic(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'edited_forum_topic', $action);
+    }
+
     public function onNewStickerSet(Closure|array|string $action)
     {
         return $this->addListen('UPDATE', 'new_sticker_set', $action);
@@ -769,6 +784,16 @@ trait ClientHandlerTrait
     public function onTonConnectDisconnect(Closure|array|string $action)
     {
         return $this->addListen('UPDATE', 'ton_connect_disconnect', $action);
+    }
+
+    public function onWidgetQuery(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'widget_query', $action);
+    }
+
+    public function onWidgetData(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'widget_data', $action);
     }
 
     public function onUpdate(Closure|array|string $action)

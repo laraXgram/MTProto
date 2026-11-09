@@ -31,6 +31,7 @@ enum ClientType: string
         'updateChannelMessageForwards' => 'message_forwards',
         'updateMessageExtendedMedia' => 'message_extended_media',
         'updateTranscribedAudio' => 'transcribed_audio',
+        'updateTranscribedAudioFile' => 'transcribed_audio_file',
         'updateGeoLiveViewed' => 'geo_live_viewed',
         'updateNewScheduledMessage' => 'scheduled_message',
         'updateDeleteScheduledMessages' => 'delete_scheduled',
@@ -165,6 +166,7 @@ enum ClientType: string
 
         'updatePinnedForumTopic' => 'pinned_forum_topic',
         'updatePinnedForumTopics' => 'pinned_forum_topics',
+        'updateEditForumTopic' => 'edited_forum_topic',
 
         'updatePeerSettings' => 'peer_settings',
         'updatePeerLocated' => 'peer_located',
@@ -215,6 +217,11 @@ enum ClientType: string
         'updateWalletGaslessInfo' => 'wallet_gasless_info',
         'updateWalletTonConnectSession' => 'ton_connect_session',
         'updateWalletTonConnectPendingDisconnect' => 'ton_connect_disconnect',
+
+        'updateBotWidgetQuery' => 'widget_query',
+        'updateInlineBotWidgetQuery' => 'widget_query',
+        'updateBotWidgetCopyQuery' => 'widget_query',
+        'updateMessageWidgetData' => 'widget_data',
     ];
 
     const MESSAGE_CONSTRUCTORS = [
@@ -252,6 +259,7 @@ enum ClientType: string
         'messageMediaGiveaway' => 'giveaway',
         'messageMediaGiveawayResults' => 'giveaway',
         'messageMediaPaidMedia' => 'paid_media',
+        'messageMediaWidget' => 'widget',
     ];
 
     const DOCUMENT_ATTRIBUTES = [

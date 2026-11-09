@@ -673,6 +673,7 @@ class UpdateFeed
             'updateChannelMessageForwards' => $this->dispatchEvent('messageForwards', $wrapped),
             'updateMessageExtendedMedia' => $this->dispatchEvent('messageExtendedMedia', $wrapped),
             'updateTranscribedAudio' => $this->dispatchEvent('transcribedAudio', $wrapped),
+            'updateTranscribedAudioFile' => $this->dispatchEvent('transcribedAudioFile', $wrapped),
             'updateGeoLiveViewed' => $this->dispatchEvent('geoLiveViewed', $wrapped),
 
             'updateNewScheduledMessage' => $this->dispatchEvent('scheduledMessage', $wrapped),
@@ -817,6 +818,7 @@ class UpdateFeed
             // ── Forum Topics ───────────────────────────────────────────
             'updatePinnedForumTopic' => $this->dispatchEvent('pinnedForumTopic', $wrapped),
             'updatePinnedForumTopics' => $this->dispatchEvent('pinnedForumTopics', $wrapped),
+            'updateEditForumTopic' => $this->dispatchEvent('editedForumTopic', $wrapped),
 
             // ── Peers ──────────────────────────────────────────────────
             'updatePeerSettings' => $this->dispatchEvent('peerSettings', $wrapped),
@@ -868,6 +870,12 @@ class UpdateFeed
             'updateWalletGaslessInfo' => $this->dispatchEvent('walletGaslessInfo', $wrapped),
             'updateWalletTonConnectSession' => $this->dispatchEvent('tonConnectSession', $wrapped),
             'updateWalletTonConnectPendingDisconnect' => $this->dispatchEvent('tonConnectDisconnect', $wrapped),
+
+            // ── Widgets ──
+            'updateBotWidgetQuery',
+            'updateInlineBotWidgetQuery',
+            'updateBotWidgetCopyQuery' => $this->dispatchEvent('widgetQuery', $wrapped),
+            'updateMessageWidgetData' => $this->dispatchEvent('widgetData', $wrapped),
 
             default => null,
         };

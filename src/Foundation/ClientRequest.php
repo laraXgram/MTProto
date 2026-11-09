@@ -58,6 +58,10 @@ use LaraGram\Support\Traits\Macroable;
  * @property-read int|null $top_msg_id                     Top message ID
  * @property-read Types\DraftMessage|null $draft           Draft message
  * @property-read bool|null $pinned                        Pinned flag
+ * @property-read Types\WidgetQueryType|null $query_type   Widget query type (onWidgetQuery)
+ * @property-read int|null $widget_id                      Shared widget ID (onWidgetQuery)
+ * @property-read string|null $public_data                 Widget public data (onWidgetData)
+ * @property-read string|null $chat_data                   Widget chat data (onWidgetData)
  * @property-read int|null $inviter_id                     Inviter user ID
  * @property-read int|null $version                        Version
  * @property-read Types\PhoneCall|null $phone_call         Phone call
@@ -133,6 +137,16 @@ use LaraGram\Support\Traits\Macroable;
  * @method mixed getCallbackAnswer(string|int $peer, int $msgId, string $data, ?string $password = null, bool $game = false)
  * @method array passwordCheck(string $password)
  * @method string tmpPassword(string $password, int $period = 60)
+ * @method mixed sendWidget(string|int $peer, string $html, ?string $caption = null, array $params = [])
+ * @method mixed sendSharedWidget(string|int $peer, int $widgetId, ?string $caption = null, array $params = [])
+ * @method mixed editWidget(string|int $peer, int $msgId, ?string $publicData = null, ?string $chatData = null)
+ * @method mixed editInlineWidget(array|TLObject $id, ?string $publicData = null, ?string $chatData = null)
+ * @method mixed editSharedWidget(int $widgetId, string $publicData, ?int $cacheTime = null)
+ * @method mixed answerWidgetQuery(int $queryId, ?string $result = null)
+ * @method string|null queryWidget(string|int $peer, int $msgId, string $data = '', ?array $queryType = null)
+ * @method mixed getWidgetPublicData(string|int $peer, int $msgId, int $hash = 0)
+ * @method string|null widgetHtml(array|TLObject $source)
+ * @method mixed transcribeAudioFile(string|array $file)
  *
  * @mixin \LaraGram\MTProto\Generated\ClientIdeHelper
  */

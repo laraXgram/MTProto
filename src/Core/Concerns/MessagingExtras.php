@@ -67,6 +67,19 @@ trait MessagingExtras
         return $this->forwardMessages($fromPeer, $toPeer, $ids, array_merge(['drop_author' => true], $params));
     }
 
+    /**
+     * Transcribe an audio file without sending it to a chat. `$file` is a local
+     * path or an already uploaded input file. While the result is `pending`,
+     * its text is partial; the final text arrives through
+     * `Client::onTranscribedAudioFile()` with the same `transcription_id`.
+     */
+    public function transcribeAudioFile(string|array $file): mixed
+    {
+        return $this->invoke('messages.transcribeAudioFile', [
+            'file' => is_string($file) ? $this->uploadFile($file) : $file,
+        ]);
+    }
+
     public function editMessage(string|int|array $peer, int $id, ?string $message = null, array $params = []): mixed
     {
         $call = ['peer' => $peer, 'id' => $id];

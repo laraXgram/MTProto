@@ -7,6 +7,102 @@ namespace LaraGram\MTProto\Foundation;
 final class InputMedia
 {
     /**
+     * inputMediaWidget - an HTML widget, for bots. A width or height of 0 lets
+     * the client size it. Requires `$html` of at most 32768 bytes, or 4096 when
+     * compressed with zlib.
+     */
+    public static function widget(
+        string  $html,
+        int     $width = 0,
+        int     $height = 0,
+        ?string $publicData = null,
+        ?string $chatData = null,
+        bool    $allowQueries = false,
+        bool    $shared = false,
+    ): array {
+        return ['_' => 'inputMediaWidget'] + self::widgetFields($html, $width, $height, $publicData, $chatData, $allowQueries, $shared);
+    }
+
+    /**
+     * inputMediaWidgetId - an existing shared widget.
+     */
+    public static function sharedWidget(int $widgetId, ?string $chatData = null): array
+    {
+        $media = ['_' => 'inputMediaWidgetId', 'widget_id' => $widgetId];
+
+        if ($chatData !== null) {
+            $media['chat_data'] = $chatData;
+        }
+
+        return $media;
+    }
+
+    /**
+     * inputBotInlineMessageWidget - the `send_message` of an inline result that
+     * posts a widget. `$extra` takes reply_markup, entities and invert_media.
+     */
+    public static function inlineWidget(
+        string  $html,
+        string  $message = '',
+        int     $width = 0,
+        int     $height = 0,
+        ?string $publicData = null,
+        ?string $chatData = null,
+        bool    $allowQueries = false,
+        bool    $shared = false,
+        array   $extra = [],
+    ): array {
+        return ['_' => 'inputBotInlineMessageWidget', 'message' => $message]
+            + self::widgetFields($html, $width, $height, $publicData, $chatData, $allowQueries, $shared)
+            + $extra;
+    }
+
+    /**
+     * inputBotInlineMessageWidgetId - the `send_message` of an inline result
+     * that posts a shared widget.
+     */
+    public static function inlineSharedWidget(int $widgetId, string $message = '', ?string $chatData = null, array $extra = []): array
+    {
+        $media = ['_' => 'inputBotInlineMessageWidgetId', 'widget_id' => $widgetId, 'message' => $message];
+
+        if ($chatData !== null) {
+            $media['chat_data'] = $chatData;
+        }
+
+        return $media + $extra;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function widgetFields(
+        string  $html,
+        int     $width,
+        int     $height,
+        ?string $publicData,
+        ?string $chatData,
+        bool    $allowQueries,
+        bool    $shared,
+    ): array {
+        $fields = ['width' => $width, 'height' => $height, 'html' => $html];
+
+        if ($publicData !== null) {
+            $fields['public_data'] = $publicData;
+        }
+        if ($chatData !== null) {
+            $fields['chat_data'] = $chatData;
+        }
+        if ($allowQueries) {
+            $fields['allow_queries'] = true;
+        }
+        if ($shared) {
+            $fields['shared_widget'] = true;
+        }
+
+        return $fields;
+    }
+
+    /**
      * inputMediaUploadedPhoto - a freshly uploaded photo.
      *
      * @param array $file An `inputFile`/`inputFileBig` from FileUploader.

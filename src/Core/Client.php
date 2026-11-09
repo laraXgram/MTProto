@@ -35,6 +35,7 @@ use LaraGram\MTProto\Core\Concerns\HandlesDrafts;
 use LaraGram\MTProto\Core\Concerns\DownloadsMedia;
 use LaraGram\MTProto\Core\Concerns\MessagingExtras;
 use LaraGram\MTProto\Core\Concerns\HandlesWallet;
+use LaraGram\MTProto\Core\Concerns\HandlesWidgets;
 use LaraGram\MTProto\Core\Concerns\InteractsWithBots;
 use LaraGram\MTProto\Core\Concerns\ManagesProfile;
 use LaraGram\MTProto\Core\Concerns\BotControls;
@@ -74,6 +75,7 @@ class Client
     use HandlesEphemeral;
     use InteractsWithBots;
     use HandlesWallet;
+    use HandlesWidgets;
 
     public const VERSION = '0.3.0';
     public const LAYER = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;

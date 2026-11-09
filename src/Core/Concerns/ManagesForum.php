@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace LaraGram\MTProto\Core\Concerns;
 
+use LaraGram\MTProto\Exceptions\MTProtoException;
+
 /**
  * @mixin \LaraGram\MTProto\Core\Client
  */
@@ -84,8 +86,21 @@ trait ManagesForum
         return $this->invoke('messages.deleteTopicHistory', ['peer' => $peer, 'top_msg_id' => $topicId]);
     }
 
-    public function toggleForum(string|int|array $peer, bool $enabled = true, bool $tabs = false): mixed
+    /**
+     * Turn topics on or off. Topics show as a list by default; `$tabs` and
+     * `$sidebar` pick another layout and cannot be combined.
+     */
+    public function toggleForum(string|int|array $peer, bool $enabled = true, bool $tabs = false, bool $sidebar = false): mixed
     {
-        return $this->invoke('channels.toggleForum', ['channel' => $peer, 'enabled' => $enabled, 'tabs' => $tabs]);
+        if ($tabs && $sidebar) {
+            throw new MTProtoException('A forum cannot show its topics as both tabs and a sidebar.');
+        }
+
+        return $this->invoke('channels.toggleForum', [
+            'channel' => $peer,
+            'enabled' => $enabled,
+            'tabs' => $tabs,
+            'sidebar' => $sidebar,
+        ]);
     }
 }

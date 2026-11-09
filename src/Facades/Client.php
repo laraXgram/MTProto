@@ -32,6 +32,7 @@ use LaraGram\Support\Facades\Facade;
  * @method static \LaraGram\Listening\Listen onMessageForwards(\Closure|array|string $action) Channel forward-count changes
  * @method static \LaraGram\Listening\Listen onMessageExtendedMedia(\Closure|array|string $action) Extended (paid) media reveal
  * @method static \LaraGram\Listening\Listen onTranscribedAudio(\Closure|array|string $action) Audio transcription results
+ * @method static \LaraGram\Listening\Listen onTranscribedAudioFile(\Closure|array|string $action) Transcription results for uploaded audio files
  * @method static \LaraGram\Listening\Listen onGeoLiveViewed(\Closure|array|string $action) Live-location viewed
  *
  * @method static \LaraGram\Listening\Listen onPhoto(\Closure|array|string $action) Photo messages
@@ -50,6 +51,7 @@ use LaraGram\Support\Facades\Facade;
  * @method static \LaraGram\Listening\Listen onPoll(\Closure|array|string $action) Poll messages
  * @method static \LaraGram\Listening\Listen onGiveaway(\Closure|array|string $action) Giveaway (and results) messages
  * @method static \LaraGram\Listening\Listen onPaidMedia(\Closure|array|string $action) Paid-media messages
+ * @method static \LaraGram\Listening\Listen onWidget(\Closure|array|string $action) HTML widget messages
  * @method static \LaraGram\Listening\Listen onDice(\Closure|array|string $action, string|array $emoji = 'any', int|array $value = 0) Dice messages (filter by emoji/value)
  *
  * @method static \LaraGram\Listening\Listen onHashtag(\Closure|array|string $action) #hashtag entity
@@ -63,6 +65,8 @@ use LaraGram\Support\Facades\Facade;
  * @method static \LaraGram\Listening\Listen onCallbackQueryData(string|array $pattern, \Closure|array|string $action) Callback queries matching a data pattern
  * @method static \LaraGram\Listening\Listen onInlineQuery(\Closure|array|string $action) Inline bot queries
  * @method static \LaraGram\Listening\Listen onChosenInlineResult(\Closure|array|string $action) Chosen inline results
+ * @method static \LaraGram\Listening\Listen onWidgetQuery(\Closure|array|string $action) Queries sent to the bot by its widgets
+ * @method static \LaraGram\Listening\Listen onWidgetData(\Closure|array|string $action) Widget data changes
  *
  * @method static \LaraGram\Listening\Listen onTyping(\Closure|array|string $action) Typing indicators
  * @method static \LaraGram\Listening\Listen onReadHistory(\Closure|array|string $action) Read-history events
@@ -171,6 +175,7 @@ use LaraGram\Support\Facades\Facade;
  *
  * @method static \LaraGram\Listening\Listen onForumTopic(\Closure|array|string $action) Forum topic pinned/unpinned
  * @method static \LaraGram\Listening\Listen onForumTopics(\Closure|array|string $action) Pinned forum-topics set changed
+ * @method static \LaraGram\Listening\Listen onEditedForumTopic(\Closure|array|string $action) Forum topic title, icon, closed or hidden state changed
  *
  * @method static \LaraGram\Listening\Listen onNewStickerSet(\Closure|array|string $action) Newly installed sticker set
  * @method static \LaraGram\Listening\Listen onStickerSetsOrder(\Closure|array|string $action) Sticker-set ordering changes
