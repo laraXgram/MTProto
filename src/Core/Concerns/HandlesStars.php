@@ -128,6 +128,88 @@ trait HandlesStars
     }
 
     /**
+     * Withdraw Stars (or TON when `$ton` is true) revenue straight to the
+     * connected wallet (needs the 2FA password). Null `$amount` withdraws all.
+     */
+    public function withdrawRevenueToWallet(string|int|array $peer, string $password, ?int $amount = null, bool $ton = false): mixed
+    {
+        $params = ['peer' => $peer, 'tmp_password' => $this->tmpPassword($password)];
+        if ($amount !== null) {
+            $params['amount'] = $amount;
+        }
+        if ($ton) {
+            $params['ton'] = true;
+        }
+
+        return $this->invoke('payments.withdrawStarsRevenueToWallet', $params);
+    }
+
+    /**
+     * Buy a collectible gift listed for on-chain resale. `$expectedAmount` is
+     * the price in nanotons; the result is the payload for the TON wallet.
+     *
+     * @param array<string, mixed> $params Optional: peer (recipient), message, show_name.
+     */
+    public function buyStarGiftOnchain(string $slug, int $expectedAmount, array $params = []): mixed
+    {
+        if (isset($params['message']) && is_string($params['message'])) {
+            $params['message'] = ['_' => 'textWithEntities', 'text' => $params['message'], 'entities' => []];
+        }
+
+        return $this->invoke('payments.buyStarGiftOnchain', array_merge([
+            'slug' => $slug,
+            'expected_amount' => $expectedAmount,
+        ], $params));
+    }
+
+    /**
+     * Change the on-chain resale price (in nanotons) of a collectible gift.
+     */
+    public function updateStarGiftOnchainPrice(string $slug, int $amount): mixed
+    {
+        return $this->invoke('payments.updateStarGiftOnchainPrice', ['slug' => $slug, 'amount' => $amount]);
+    }
+
+    public function cancelStarGiftOnchainSale(string $slug): mixed
+    {
+        return $this->invoke('payments.cancelStarGiftOnchainSale', ['slug' => $slug]);
+    }
+
+    /**
+     * Offer `$amount` nanotons for a collectible gift on-chain; the offer
+     * expires after `$duration` seconds.
+     */
+    public function sendStarGiftOnchainOffer(string $slug, int $amount, int $duration): mixed
+    {
+        return $this->invoke('payments.sendStarGiftOnchainOffer', [
+            'slug' => $slug,
+            'amount' => $amount,
+            'duration' => $duration,
+            'random_id' => random_int(PHP_INT_MIN, PHP_INT_MAX),
+        ]);
+    }
+
+    /**
+     * Answer an on-chain offer for your gift, identified by the offer's
+     * service message: accept it, or decline it when `$accept` is false.
+     */
+    public function answerStarGiftOnchainOffer(int $offerMsgId, bool $accept = true): mixed
+    {
+        return $this->invoke(
+            $accept ? 'payments.acceptStarGiftOnchainOffer' : 'payments.declineStarGiftOnchainOffer',
+            ['offer_msg_id' => $offerMsgId],
+        );
+    }
+
+    /**
+     * Withdraw an on-chain offer you made, identified by its service message.
+     */
+    public function cancelStarGiftOnchainOffer(int $offerMsgId): mixed
+    {
+        return $this->invoke('payments.cancelStarGiftOnchainOffer', ['offer_msg_id' => $offerMsgId]);
+    }
+
+    /**
      * Exchange rates used for Stars and TON, keyed by currency code.
      *
      * @return array<string, float>

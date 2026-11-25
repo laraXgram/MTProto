@@ -418,6 +418,32 @@ trait MessagingExtras
     }
 
     /**
+     * Set the AI compose style used by default in a chat, or clear it by
+     * passing null. `$style` is an `inputAiComposeStyle` array or its fields
+     * (emojify, proofread, tone, to_lang).
+     *
+     * @param array<string, mixed>|null $style
+     */
+    public function setAiComposeStyle(string|int|array $peer, ?array $style = null): mixed
+    {
+        $params = ['peer' => $peer];
+        if ($style !== null) {
+            $params['style'] = isset($style['_']) ? $style : ['_' => 'inputAiComposeStyle'] + $style;
+        }
+
+        return $this->invoke('aicompose.setChatStyle', $params);
+    }
+
+    /**
+     * The on-device speech recognition models (and their languages) newer
+     * than `$version`.
+     */
+    public function getTranscriptionModels(int $version = 0): mixed
+    {
+        return $this->invoke('messages.getTranscriptionModels', ['version' => $version]);
+    }
+
+    /**
      * Translate a rich message (or a peer's existing message ids) to `$toLang`.
      *
      * Provide either `$params['text']` (a list of `InputRichMessage`) or

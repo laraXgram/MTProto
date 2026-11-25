@@ -111,6 +111,73 @@ trait BotControls
     }
 
     /**
+     * Bot API names accepted by {@see setBotSettings()}, mapped to the
+     * `bots.setBotSettings` flag each one sets.
+     */
+    private const BOT_SETTINGS = [
+        'supports_inline_queries' => 'inline_mode',
+        'inline_query_placeholder' => 'inline_placeholder',
+        'needs_inline_query_location' => 'inline_geo',
+        'inline_feedback_share_denominator' => 'inline_feedback',
+        'can_join_groups' => 'nochats',
+        'can_read_all_group_messages' => 'chat_history',
+        'can_connect_to_business' => 'business',
+        'can_manage_bots' => 'can_manage_bots',
+        'supports_guest_queries' => 'guestchat',
+        'supports_join_request_queries' => 'guard',
+        'has_topics_enabled' => 'forum_view',
+        'allows_users_to_create_topics' => 'forum_can_manage_topics',
+        'has_topic_sidebar' => 'forum_sidebar',
+        'can_communicate_with_bots' => 'bot_to_bot_communication_mode',
+        'callback_query_mode' => 'callback_mode',
+    ];
+
+    /**
+     * Change the settings BotFather manages: inline mode, group privacy,
+     * topics, business connections and so on. Keys are the Bot API names
+     * (`supports_inline_queries`, `can_join_groups`, `has_topic_sidebar`,
+     * `callback_query_mode` = default|auto|inline, ...) or the raw
+     * `bots.setBotSettings` flags; only the keys passed are changed.
+     * `$bot` names a bot you own; leave it null in a bot session.
+     *
+     * @param array<string, bool|int|string> $settings
+     */
+    public function setBotSettings(array $settings, string|int|array|null $bot = null): mixed
+    {
+        $params = [];
+        foreach ($settings as $key => $value) {
+            $flag = self::BOT_SETTINGS[$key] ?? $key;
+            $params[$flag] = match ($flag) {
+                // The flag stores "cannot join groups".
+                'nochats' => !$value,
+                'inline_placeholder' => (string) $value,
+                'inline_feedback' => (int) $value,
+                'callback_mode' => $value === 'default' ? '' : (string) $value,
+                default => (bool) $value,
+            };
+        }
+        if ($bot !== null) {
+            $params['bot'] = $bot;
+        }
+
+        return $this->invoke('bots.setBotSettings', $params);
+    }
+
+    /**
+     * Invite 1-10 users to the private chat with a bot you own. Each invitee
+     * gets a `messageActionBotInvite` naming you, and the bot can then message
+     * them. Succeeds if at least one user was invited.
+     *
+     * @param string|int|array|list<string|int|array> $users
+     */
+    public function inviteUsersToBot(string|int|array $bot, string|int|array $users): mixed
+    {
+        $users = is_array($users) && array_is_list($users) ? $users : [$users];
+
+        return $this->invoke('messages.inviteUsersToBot', ['bot' => $bot, 'users' => $users]);
+    }
+
+    /**
      * Set the bot's default admin rights suggested when added to groups (or
      * channels when `$forChannels` is true). `$rights` is a
      * {@see ChatRights::ADMIN_FLAGS} list / "all".
