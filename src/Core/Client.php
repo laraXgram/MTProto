@@ -78,7 +78,7 @@ class Client
     use HandlesWallet;
     use HandlesWidgets;
 
-    public const VERSION = '0.3.0';
+    public const VERSION = '0.7.0';
     public const LAYER = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
 
     private ConnectionInterface $connection;
