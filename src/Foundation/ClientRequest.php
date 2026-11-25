@@ -884,7 +884,7 @@ class ClientRequest implements ProvidesListenContext
     /**
      * Get the listen handling the request.
      */
-    public function listen(string $param = null, mixed $default = null): mixed
+    public function listen(?string $param = null, mixed $default = null): mixed
     {
         $listen = call_user_func($this->getListenResolver());
 
