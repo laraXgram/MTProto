@@ -90,6 +90,9 @@ class Client
     private SessionInterface $session;
     private ?RPCHandler $rpc = null;
     private ?MessagePump $pump = null;
+
+    /** @var callable(bool): void|null Handed to every pump; see {@see onConnectionState()}. */
+    private $connectionStateHandler = null;
     private ?TLParser $tlParser = null;
     private ?PeerDatabase $peerDb = null;
     private ?\LaraGram\MTProto\Contracts\Store $peerStore = null;
@@ -1629,8 +1632,22 @@ class Client
             $this->pump->setDeviceProfile($this->deviceProfile);
         }
         $this->pump->setReconnector(fn(): ConnectionInterface => $this->reconnectForPump());
+        $this->pump->setConnectionStateHandler($this->connectionStateHandler);
 
         return $this->pump;
+    }
+
+    /**
+     * Be told when the pump's link drops (false) and when a reconnect restores
+     * it (true), instead of polling the connection. The handler survives the
+     * pump being rebuilt and must return immediately.
+     *
+     * @param callable(bool): void|null $handler
+     */
+    public function onConnectionState(?callable $handler): void
+    {
+        $this->connectionStateHandler = $handler;
+        $this->pump?->setConnectionStateHandler($handler);
     }
 
     /**

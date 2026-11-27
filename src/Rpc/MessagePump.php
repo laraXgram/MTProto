@@ -69,6 +69,9 @@ final class MessagePump
     /** @var callable(array): void|null Push container handler (UpdateFeed::feed). */
     private $updateHandler = null;
 
+    /** @var callable(bool): void|null Told when the link drops (false) and comes back (true). */
+    private $connectionStateHandler = null;
+
     private int $apiId;
     private string $apiHash;
     private int $layer = \LaraGram\MTProto\TL\SchemaSource::DEFAULT_LAYER;
@@ -190,6 +193,18 @@ final class MessagePump
     public function setUpdateHandler(callable $handler): void
     {
         $this->updateHandler = $handler;
+    }
+
+    /**
+     * Sink for connection state changes: false once the link is lost, true
+     * once a reconnect restored it. Like the update handler, it must return
+     * immediately.
+     *
+     * @param callable(bool): void|null $handler
+     */
+    public function setConnectionStateHandler(?callable $handler): void
+    {
+        $this->connectionStateHandler = $handler;
     }
 
     public function setPingInterval(float $seconds): void
@@ -951,6 +966,7 @@ final class MessagePump
     private function reconnect(string $reason = 'unknown'): void
     {
         $this->diagnostics['reconnect_reasons'][$reason] = ($this->diagnostics['reconnect_reasons'][$reason] ?? 0) + 1;
+        $this->notifyConnectionState(false);
 
         if ($this->reconnector === null) {
             $this->logger?->error("Pump connection lost ({$reason}) and no reconnector set - stopping");
@@ -970,6 +986,7 @@ final class MessagePump
                 $this->connection = ($this->reconnector)();
                 $this->stats['reconnects']++;
                 $this->logger?->info("Pump reconnected (attempt {$attempt})");
+                $this->notifyConnectionState(true);
 
                 $this->replayPending();
 
@@ -987,6 +1004,19 @@ final class MessagePump
         $this->logger?->error('Pump failed to reconnect after 5 attempts - stopping');
         $this->running = false;
         $this->failPending(new MTProtoException("Pump stopped: reconnect failed ({$reason})"));
+    }
+
+    private function notifyConnectionState(bool $connected): void
+    {
+        if ($this->connectionStateHandler === null) {
+            return;
+        }
+
+        try {
+            ($this->connectionStateHandler)($connected);
+        } catch (\Throwable $e) {
+            $this->logger?->warning("Pump connection state handler failed: {$e->getMessage()}");
+        }
     }
 
     /**
