@@ -34,6 +34,9 @@ final class MessagePump
     private const MSG_DETAILED_INFO = 0x276d3ec6;
     private const MSG_NEW_DETAILED_INFO = 0x809db6df;
 
+    /** Seconds received msg_ids wait to be acknowledged together. */
+    private const ACK_DELAY = 1.0;
+
     private TLSerializer $serializer;
 
     /** Shared frame crypto. */
@@ -48,13 +51,16 @@ final class MessagePump
     /** @var array<int> Server msg_ids awaiting acknowledgement. */
     private array $pendingAcks = [];
 
+    /** A flush of {@see $pendingAcks} is already on its way. */
+    private bool $ackFlushScheduled = false;
+
     private bool $initialized = false;
     private bool $running = false;
 
     /** Single-token write mutex. */
     private ?Channel $writeLock = null;
 
-    /** @var int[] Active timer ids (ping, ack flush). */
+    /** @var int[] Active timer ids (ping). */
     private array $timers = [];
 
     /** @var callable(): ConnectionInterface|null Re-handshake + return fresh connection. */
@@ -219,12 +225,10 @@ final class MessagePump
             $this->readLoop();
         });
 
-        // Keep-alive ping + periodic ack flush via runtime timers.
+        // Keep-alive ping. Acks are flushed on demand ({@see scheduleAckFlush()}),
+        // so an idle link has no timer waking the process every second.
         $this->timers[] = $this->runtime->timer($this->pingInterval, function (): void {
             $this->sendPing();
-        });
-        $this->timers[] = $this->runtime->timer(1.0, function (): void {
-            $this->flushAcks();
         });
     }
 
@@ -539,6 +543,7 @@ final class MessagePump
         }
 
         $this->pendingAcks[] = $msgId;
+        $this->scheduleAckFlush();
         $this->dispatch($msgId, $body);
     }
 
@@ -862,6 +867,24 @@ final class MessagePump
     }
 
     /**
+     * Acknowledge the received msg_ids {@see ACK_DELAY} seconds after the
+     * first of them arrived, batching everything received meanwhile.
+     */
+    private function scheduleAckFlush(): void
+    {
+        if ($this->ackFlushScheduled || !$this->running) {
+            return;
+        }
+
+        $this->ackFlushScheduled = true;
+        $this->runtime->spawn(function (): void {
+            $this->runtime->sleep(self::ACK_DELAY);
+            $this->ackFlushScheduled = false;
+            $this->flushAcks();
+        });
+    }
+
+    /**
      * Flush accumulated server msg_ids as a single msgs_ack.
      */
     private function flushAcks(): void
@@ -875,10 +898,14 @@ final class MessagePump
 
         try {
             $this->sendEncrypted($payload, false);
+            if ($this->pendingAcks !== []) {
+                $this->scheduleAckFlush();
+            }
         } catch (\Throwable $e) {
-            // Put them back; a later flush (or reconnect) retries.
+            // Put them back and retry with the next flush.
             $this->pendingAcks = array_merge($acks, $this->pendingAcks);
             $this->logger?->warning("Pump ack flush failed: {$e->getMessage()}");
+            $this->scheduleAckFlush();
         }
     }
 
